@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { LoopConfig } from './types.js';
+import { DEFAULT_SURFACES, type LoopConfig } from './types.js';
 import { exists, readJson, writeJson } from './util/fsx.js';
 
 export const CONFIG_FILE = 'marketing-loop.config.json';
@@ -47,6 +47,7 @@ export const defaultConfig: LoopConfig = {
   audience: '',
   allowedClaims: [],
   maxProposals: 60,
+  surfaces: [...DEFAULT_SURFACES],
   disabledPrinciples: [],
   protectedFiles: ['LICENSE', 'CHANGELOG.md', 'package.json', 'package-lock.json'],
 };

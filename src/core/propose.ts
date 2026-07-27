@@ -63,15 +63,26 @@ export function propose(input: ProposeInput): ProposeOutput {
   const proposals: Proposal[] = [];
   const openItems: ProposeOutput['openItems'] = [];
 
+  /*
+   * Split the budget rather than letting the engine eat it.
+   *
+   * The engine's rewrites are the safe, mechanical ones — strip a hype word,
+   * fix an article. The open items are the headlines and CTAs that actually
+   * move a funnel, and they need a model with judgement. If the engine were
+   * allowed to fill the whole cap it would crowd out the valuable half of the
+   * work with the cheap half.
+   */
+  const engineBudget = Math.max(1, Math.ceil(config.maxProposals * 0.6));
+
   for (const item of ranked) {
-    if (proposals.length >= config.maxProposals) break;
+    if (proposals.length >= engineBudget && openItems.length >= config.maxProposals) break;
     const itemFindings = findingsFor(findings, item.id);
     if (!itemFindings.length) continue;
 
     const evidence = buildEvidence(item, itemFindings, behavior);
     const rewrite = safeRewrite(item, items, input.product, itemFindings);
 
-    if (rewrite && rewrite.after !== item.text) {
+    if (rewrite && rewrite.after !== item.text && proposals.length < engineBudget) {
       proposals.push({
         id: shortHash('proposal', item.id, rewrite.after),
         copyId: item.id,
@@ -99,7 +110,11 @@ export function propose(input: ProposeInput): ProposeOutput {
     });
   }
 
-  return { proposals, openItems: openItems.slice(0, 40) };
+  // Open items and engine proposals share one cap. Handing an agent 40 rewrites
+  // on top of 60 engine proposals produces a 100-item review, and a review that
+  // long does not get finished.
+  const budget = Math.max(0, config.maxProposals - proposals.length);
+  return { proposals, openItems: openItems.slice(0, budget) };
 }
 
 /* ------------------------------------------------------------- rewriting */

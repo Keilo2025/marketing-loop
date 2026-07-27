@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "The marketing copy loop for vibe-coding agents.",
-    "version": "0.1.1"
+    "version": "0.3.0"
   },
   "plugins": [
     {
       "name": "marketing-loop",
       "source": "./",
       "description": "Reads your code, works out what the product actually solves, rewrites the copy to sell that instead of the feature, and ships nothing until a human approves it on a canvas.",
-      "version": "0.1.1",
+      "version": "0.3.0",
       "author": {
         "name": "Christian Buchholz"
       },

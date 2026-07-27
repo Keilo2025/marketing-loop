@@ -11,12 +11,13 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_FILE, defaultConfig, loadConfig, paths, saveConfig } from './config.js';
-import { analyse, prioritise } from './core/analyse.js';
+import { analyse, prioritiseDetailed } from './core/analyse.js';
 import { applyProposals, revert } from './core/apply.js';
 import { behaviorSubjects, loadBehavior } from './core/behavior.js';
 import { renderBrief } from './core/brief.js';
 import { serveCanvas } from './core/canvas.js';
 import { applyGuardrails } from './core/guardrails.js';
+import { linkSiblings, siblingGroups } from './core/siblings.js';
 import {
   AGENT_TARGETS,
   detectAgents,
@@ -27,12 +28,14 @@ import { detectProvider, generateWithLlm } from './core/llm.js';
 import { buildProductModel } from './core/product.js';
 import { propose } from './core/propose.js';
 import { renderReport } from './core/report.js';
-import { applyDecisions, collectReview, renderReview } from './core/review.js';
+import { applyDecisions, collectReview, foldDecisions, renderReview } from './core/review.js';
 import { scanRepo, summarise } from './core/scan.js';
+import { DEFAULT_SURFACES } from './types.js';
 import type {
   BehaviorReport,
   CopyFinding,
   CopyItem,
+  LoopConfig,
   ProductModel,
   Proposal,
   ProposalSet,
@@ -40,7 +43,7 @@ import type {
 import { exists, readJson, writeJson, writeText } from './util/fsx.js';
 import { c, log, table } from './util/log.js';
 
-const VERSION = '0.1.1';
+const VERSION = '0.3.0';
 
 interface Flags {
   _: string[];
@@ -131,6 +134,7 @@ interface ScanArtefacts {
   findings: CopyFinding[];
   behavior: BehaviorReport;
   ranked: CopyItem[];
+  outOfScope: Record<string, number>;
 }
 
 function runScan(cwd: string): ScanArtefacts {
@@ -141,14 +145,37 @@ function runScan(cwd: string): ScanArtefacts {
   const product = buildProductModel(cwd, config);
   const behavior = loadBehavior(p.data, items);
   const findings = analyse(items, product, config);
-  const ranked = prioritise(items, findings, behaviorSubjects(behavior));
+  const { ranked, outOfScope } = prioritiseDetailed(
+    items,
+    findings,
+    behaviorSubjects(behavior),
+    config.surfaces ?? DEFAULT_SURFACES,
+  );
 
   writeJson(p.inventory, { generatedAt: new Date().toISOString(), filesScanned, filesWithCopy, items });
   writeJson(p.product, product);
   writeJson(p.findings, findings);
   writeJson(p.behavior, behavior);
 
-  return { items, product, findings, behavior, ranked };
+  return { items, product, findings, behavior, ranked, outOfScope };
+}
+
+/** Tell the human what was deliberately left alone, and how to change that. */
+function reportOutOfScope(outOfScope: Record<string, number>, config: LoopConfig): void {
+  const entries = Object.entries(outOfScope).filter(([, n]) => n > 0);
+  if (!entries.length) return;
+
+  const total = entries.reduce((n, [, count]) => n + count, 0);
+  log.blank();
+  log.dim(
+    `${total} string${total === 1 ? '' : 's'} skipped as out of scope: ` +
+      entries.map(([surface, n]) => `${n} ${surface}`).join(' · '),
+  );
+
+  if (outOfScope.legal) {
+    log.dim('Legal text is never rewritten by default — persuasive terms of service are a liability.');
+  }
+  log.dim(`Change this with "surfaces" in ${CONFIG_FILE} (currently: ${(config.surfaces ?? DEFAULT_SURFACES).join(', ')}).`);
 }
 
 function cmdScan(cwd: string, flags: Flags): void {
@@ -156,7 +183,7 @@ function cmdScan(cwd: string, flags: Flags): void {
   const p = paths(cwd, config);
   log.step('Scanning…');
 
-  const { items, product, findings, behavior, ranked } = runScan(cwd);
+  const { items, product, findings, behavior, ranked, outOfScope } = runScan(cwd);
   const counts = summarise(items);
 
   log.blank();
@@ -188,6 +215,8 @@ function cmdScan(cwd: string, flags: Flags): void {
     log.info(`    ${c.grey(`${item.kind} · ${itemFindings.join(', ')}`)}`);
   }
 
+  reportOutOfScope(outOfScope, config);
+
   log.blank();
   log.dim(`Written to ${path.relative(cwd, p.out)}/`);
   log.info(`Next: ${c.cyan('npx marketing-loop propose')}`);
@@ -203,7 +232,7 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
   if (typeof flags.max === 'string') config.maxProposals = Number(flags.max) || config.maxProposals;
 
   log.step('Scanning…');
-  const { items, product, findings, behavior, ranked } = runScan(cwd);
+  const { items, product, findings, behavior, ranked, outOfScope } = runScan(cwd);
 
   log.step('Proposing…');
   const result = propose({ items, findings, product, behavior, config, ranked });
@@ -230,10 +259,14 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
 
   const { kept, blocked } = applyGuardrails(proposals, config);
 
+  // Localised bundles produce the same change dozens of times. Link them so the
+  // review can offer to carry one decision across the set.
+  const linked = linkSiblings(kept);
+
   const set: ProposalSet = {
     generatedAt: new Date().toISOString(),
     product: product.name,
-    proposals: kept,
+    proposals: linked,
   };
   writeJson(p.proposals, set);
 
@@ -241,7 +274,27 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
   writeText(p.brief, brief);
 
   log.blank();
+  const groups = siblingGroups(linked);
+  const localised = groups.filter((g) => g.locales.length > 1);
+
   log.ok(`${kept.length} proposals ready`);
+  reportOutOfScope(outOfScope, config);
+
+  if (groups.length) {
+    const duplicated = groups.reduce((n, g) => n + g.members.length, 0);
+    log.info(
+      `${duplicated} of them are ${groups.length} change${groups.length === 1 ? '' : 's'} repeated across files. ` +
+        'Approve one and the review offers to carry the rest.',
+    );
+  }
+
+  if (localised.length) {
+    log.blank();
+    log.warn(
+      `${localised.length} string${localised.length === 1 ? ' appears' : 's appear'} identically in several locale bundles.`,
+    );
+    log.dim('That usually means those locales were never translated. Fixing the copy does not fix that.');
+  }
   if (blocked.length) {
     log.warn(`${blocked.length} blocked by guardrails:`);
     for (const b of blocked.slice(0, 5)) {
@@ -290,10 +343,25 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
       return;
     }
     const decisions = collectReview(fs.readFileSync(p.review, 'utf8'));
-    const updated = applyDecisions(set, decisions);
+    const { set: updated, fannedOut } = foldDecisions(set, decisions);
     writeJson(p.proposals, updated);
+
     const approved = updated.proposals.filter((x) => x.status === 'approved').length;
-    log.ok(`${approved} approved, ${decisions.length - approved} rejected`);
+    const rejected = updated.proposals.filter((x) => x.status === 'rejected').length;
+    log.ok(`${approved} approved, ${rejected} rejected`);
+
+    if (fannedOut) {
+      log.info(`${fannedOut} carried across identical copies in other files.`);
+    } else {
+      const groups = siblingGroups(updated.proposals);
+      const undecided = groups.filter((g) => g.members.some((m) => m.status === 'pending'));
+      if (undecided.length) {
+        log.blank();
+        log.warn(`${undecided.length} change${undecided.length === 1 ? '' : 's'} appear in more than one file.`);
+        log.dim('Tick SAME DECISION FOR ALL IDENTICAL COPIES on a block to carry your call across the rest.');
+      }
+    }
+
     log.info(`Next: ${c.cyan('npx marketing-loop apply')}`);
     return;
   }

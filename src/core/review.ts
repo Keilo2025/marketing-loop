@@ -14,6 +14,7 @@ import type { Proposal, ProposalSet } from '../types.js';
 const MARK = {
   approve: '- [ ] APPROVE',
   reject: '- [ ] REJECT',
+  all: '- [ ] SAME DECISION FOR ALL IDENTICAL COPIES',
 };
 
 export function renderReview(set: ProposalSet): string {
@@ -94,9 +95,23 @@ function renderProposal(p: Proposal): string[] {
     s.push('');
   }
 
+  if (p.localeWarning) {
+    s.push('> [!NOTE]');
+    s.push(`> **Translation.** ${p.localeWarning}`);
+    s.push('');
+  }
+
   s.push(`<!-- marketing-loop:${p.id} -->`);
   s.push(MARK.approve);
   s.push(MARK.reject);
+
+  // Without this line, a localised repo means ticking the same box forty times.
+  // It is opt-in rather than default because the whole gate is worth nothing if
+  // one tick can silently change forty files.
+  if (p.siblings?.length) {
+    s.push(MARK.all + ` (${p.siblings.length} other${p.siblings.length === 1 ? '' : 's'})`);
+  }
+
   s.push('');
   s.push('```FINAL');
   s.push(p.after);
@@ -112,6 +127,17 @@ export interface Decision {
   proposalId: string;
   approved: boolean;
   finalText?: string;
+  /** The human ticked "same decision for all identical copies" on this block. */
+  fanOut?: boolean;
+  /**
+   * Whether the human actually ticked a box on this block, as opposed to
+   * leaving it at the default reject.
+   *
+   * Every block in review.md produces a decision, so without this a fan-out
+   * could never find a sibling to carry to — they would all look decided.
+   * Undefined counts as explicit: a hand-built decision is a real one.
+   */
+  explicit?: boolean;
 }
 
 export function collectReview(markdown: string): Decision[] {
@@ -125,8 +151,10 @@ export function collectReview(markdown: string): Decision[] {
 
     const approved = /- \[[xX]\]\s*APPROVE/.test(block);
     const rejected = /- \[[xX]\]\s*REJECT/.test(block);
+    const fanOut = /- \[[xX]\]\s*SAME DECISION FOR ALL/.test(block);
+
     if (!approved || rejected) {
-      decisions.push({ proposalId: id, approved: false });
+      decisions.push({ proposalId: id, approved: false, fanOut, explicit: rejected });
       continue;
     }
 
@@ -135,25 +163,62 @@ export function collectReview(markdown: string): Decision[] {
       proposalId: id,
       approved: true,
       finalText: final?.[1]?.trim(),
+      fanOut,
+      explicit: true,
     });
   }
 
   return decisions;
 }
 
-/** Folds decisions back into the proposal set. */
-export function applyDecisions(set: ProposalSet, decisions: Decision[]): ProposalSet {
-  const byId = new Map(decisions.map((d) => [d.proposalId, d]));
+export interface FoldResult {
+  set: ProposalSet;
+  /** Proposals decided by a fan-out rather than directly, for reporting. */
+  fannedOut: number;
+}
 
-  return {
-    ...set,
-    proposals: set.proposals.map((p) => {
-      const decision = byId.get(p.id);
-      if (!decision) return p;
-      if (!decision.approved) return { ...p, status: 'rejected' as const };
-      const edited =
-        decision.finalText && decision.finalText !== p.after ? decision.finalText : undefined;
-      return { ...p, status: 'approved' as const, ...(edited ? { edited } : {}) };
-    }),
-  };
+/**
+ * Folds decisions back into the proposal set, carrying any ticked fan-out
+ * across that proposal's siblings.
+ *
+ * A fan-out only ever reaches siblings the human left untouched. If they
+ * approved one locale and explicitly rejected another, that reject stands —
+ * an explicit decision is never overwritten by a bulk one.
+ */
+export function applyDecisions(set: ProposalSet, decisions: Decision[]): ProposalSet {
+  return foldDecisions(set, decisions).set;
+}
+
+export function foldDecisions(set: ProposalSet, decisions: Decision[]): FoldResult {
+  const byId = new Map(decisions.map((d) => [d.proposalId, d]));
+  const explicit = new Set(
+    decisions.filter((d) => d.explicit !== false).map((d) => d.proposalId),
+  );
+
+  // Work out what each fan-out implies before touching anything.
+  const carried = new Map<string, { approved: boolean; finalText?: string }>();
+  for (const decision of decisions) {
+    if (!decision.fanOut) continue;
+    const lead = set.proposals.find((p) => p.id === decision.proposalId);
+    for (const sibId of lead?.siblings ?? []) {
+      if (explicit.has(sibId) || carried.has(sibId)) continue;
+      carried.set(sibId, { approved: decision.approved, finalText: decision.finalText });
+    }
+  }
+
+  const proposals = set.proposals.map((p) => {
+    const carry = carried.get(p.id);
+    // A carried decision wins over the default reject that every untouched
+    // block produces — but never over a box the human actually ticked.
+    const decision = carry ? undefined : byId.get(p.id);
+    const call = decision ?? (carry ? { ...carry, proposalId: p.id } : undefined);
+
+    if (!call) return p;
+    if (!call.approved) return { ...p, status: 'rejected' as const };
+
+    const edited = call.finalText && call.finalText !== p.after ? call.finalText : undefined;
+    return { ...p, status: 'approved' as const, ...(edited ? { edited } : {}) };
+  });
+
+  return { set: { ...set, proposals }, fannedOut: carried.size };
 }

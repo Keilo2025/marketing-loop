@@ -5,16 +5,17 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { analyse, prioritise } from '../dist/core/analyse.js';
+import { analyse, prioritise, prioritiseDetailed } from '../dist/core/analyse.js';
 import { applyProposals } from '../dist/core/apply.js';
 import { loadBehavior, parseDelimited } from '../dist/core/behavior.js';
-import { extractFromFile, looksLikeCopy } from '../dist/core/extract.js';
+import { extractFromFile, inferSurface, looksLikeCopy } from '../dist/core/extract.js';
 import { applyGuardrails } from '../dist/core/guardrails.js';
 import { AGENT_TARGETS, install, uninstall } from '../dist/core/install.js';
 import { buildProductModel } from '../dist/core/product.js';
 import { fixArticles, propose } from '../dist/core/propose.js';
 import { PRINCIPLES } from '../dist/core/psychology.js';
-import { applyDecisions, collectReview, renderReview } from '../dist/core/review.js';
+import { applyDecisions, collectReview, foldDecisions, renderReview } from '../dist/core/review.js';
+import { linkSiblings, localeOf, siblingGroups } from '../dist/core/siblings.js';
 import { scanRepo } from '../dist/core/scan.js';
 import { defaultConfig } from '../dist/config.js';
 
@@ -402,6 +403,181 @@ test('AGENTS.md section installs and strips cleanly around existing content', ()
   assert.ok(content.includes('Existing instructions.'));
 
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+/* ----------------------------------------------------------------- surfaces */
+
+test('legal and internal paths are recognised before anything else', () => {
+  assert.equal(inferSurface('legal/terms.md'), 'legal');
+  assert.equal(inferSurface('app/(marketing)/privacy-policy/page.tsx'), 'legal');
+  assert.equal(inferSurface('src/pages/cookie-policy.tsx'), 'legal');
+  assert.equal(inferSurface('content/gdpr.mdx'), 'legal');
+  // A legal page about pricing is still a legal page.
+  assert.equal(inferSurface('legal/pricing-terms.md'), 'legal');
+
+  assert.equal(inferSurface('.github/PULL_REQUEST_TEMPLATE.md'), 'internal');
+  assert.equal(inferSurface('CHANGELOG.md'), 'internal');
+  assert.equal(inferSurface('docs/adr/0001-use-postgres.md'), 'internal');
+
+  assert.equal(inferSurface('docs/getting-started.md'), 'docs');
+  assert.equal(inferSurface('src/app/(marketing)/page.tsx'), 'landing');
+  assert.equal(inferSurface('src/app/dashboard/page.tsx'), 'app');
+});
+
+test('out-of-scope surfaces are counted and held back, not silently dropped', () => {
+  const items = [
+    { id: 'a', file: 'src/app/page.tsx', line: 1, text: 'Submit', kind: 'cta', surface: 'landing', context: [], length: 6 },
+    { id: 'b', file: 'legal/terms.md', line: 1, text: 'Liability is limited by the provider.', kind: 'body', surface: 'legal', context: [], length: 36 },
+    { id: 'c', file: 'docs/guide.md', line: 1, text: 'Configuration is handled by the wizard.', kind: 'body', surface: 'docs', context: [], length: 38 },
+  ];
+  const findings = items.map((i) => ({ copyId: i.id, rule: 'passive-voice', severity: 'low', message: '', suggests: [] }));
+
+  const { ranked, outOfScope } = prioritiseDetailed(items, findings, []);
+
+  assert.deepEqual(ranked.map((r) => r.id), ['a'], 'only the landing string is in scope');
+  assert.equal(outOfScope.legal, 1);
+  assert.equal(outOfScope.docs, 1);
+
+  // Opting in is possible, because sometimes docs really are the funnel.
+  const opted = prioritiseDetailed(items, findings, [], ['landing', 'docs']);
+  assert.deepEqual(opted.ranked.map((r) => r.id).sort(), ['a', 'c']);
+  assert.equal(opted.outOfScope.legal, 1);
+});
+
+test('the proposal cap covers open items too, and never starves them', () => {
+  // 40 rewritable strings, all of which the engine could handle on its own.
+  const items = Array.from({ length: 40 }, (_, i) => ({
+    id: 'i' + i, file: `src/app/p${i}.tsx`, line: 1,
+    text: `We provide a powerful platform for teams number ${i}.`,
+    kind: 'subhead', surface: 'landing', context: [], length: 50,
+  }));
+  const findings = items.map((i) => ({ copyId: i.id, rule: 'hype-vocabulary', severity: 'high', message: '', suggests: [] }));
+  const product = { name: 't', stack: [], routes: [], features: [], audienceHints: [], pricingTiers: [], integrations: [], generatedAt: '' };
+  const behavior = { signals: [], funnel: [], notes: [], problems: [], sourceFiles: [] };
+
+  const capped = { ...config, maxProposals: 10 };
+  const { proposals, openItems } = propose({ items, findings, product, behavior, config: capped, ranked: items });
+
+  assert.ok(proposals.length <= 6, `engine took ${proposals.length}, should cap at 60% of 10`);
+  assert.ok(
+    proposals.length + openItems.length <= capped.maxProposals,
+    `total ${proposals.length + openItems.length} exceeds the cap of ${capped.maxProposals}`,
+  );
+});
+
+/* ---------------------------------------------------------------- siblings */
+
+function fakeProposal(id, file, over = {}) {
+  return {
+    id, copyId: 'c' + id, file, line: 189, kind: 'subhead',
+    before: 'Enhance your experience with powerful extras',
+    after: 'Enhance your experience with extras',
+    alternatives: [], rationale: 'r', problemSolved: 'p', principles: [],
+    evidence: [], confidence: 0.7, status: 'pending', author: 'engine', ...over,
+  };
+}
+
+test('identical changes across files are linked, and locale bundles are called out', () => {
+  const proposals = linkSiblings([
+    fakeProposal('a', 'messages/en/marketing.json'),
+    fakeProposal('b', 'messages/tr/marketing.json'),
+    fakeProposal('c', 'messages/uk/marketing.json'),
+    // Same string, different rewrite — not a sibling. Approving the group must
+    // never drag in a change the human was not shown.
+    fakeProposal('d', 'messages/de/marketing.json', { after: 'Add extras to your plan' }),
+    fakeProposal('e', 'index.html', { before: 'Submit', after: 'Get my audit' }),
+  ]);
+
+  const [a, b, c, d, e] = proposals;
+  assert.deepEqual(a.siblings.sort(), ['b', 'c']);
+  assert.deepEqual(b.siblings.sort(), ['a', 'c']);
+  assert.equal(d.siblings, undefined, 'a different rewrite is not a sibling');
+  assert.equal(e.siblings, undefined, 'a different string is not a sibling');
+
+  assert.match(a.localeWarning, /3 locales/);
+  assert.match(a.localeWarning, /tr|uk/);
+  assert.match(a.localeWarning, /re-translating/);
+
+  const groups = siblingGroups(proposals);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].members.length, 3);
+  assert.deepEqual(groups[0].locales.sort(), ['en', 'tr', 'uk']);
+});
+
+test('locale detection handles the shapes people actually use', () => {
+  assert.equal(localeOf('messages/tr/marketing.json'), 'tr');
+  assert.equal(localeOf('src/locales/pt-BR/common.json'), 'pt-BR');
+  assert.equal(localeOf('public/i18n/de.json'), 'de');
+  assert.equal(localeOf('app/translations/fr_CA/app.yaml'), 'fr_CA');
+  assert.equal(localeOf('src/components/Hero.tsx'), null);
+  assert.equal(localeOf('index.html'), null);
+  // A two-letter directory that is not a locale directory must not match.
+  assert.equal(localeOf('src/ui/button.tsx'), null);
+});
+
+test('a ticked fan-out carries the decision, but never overrides an explicit one', () => {
+  const set = {
+    generatedAt: '', product: 't',
+    proposals: linkSiblings([
+      fakeProposal('a', 'messages/en/m.json'),
+      fakeProposal('b', 'messages/tr/m.json'),
+      fakeProposal('c', 'messages/uk/m.json'),
+    ]),
+  };
+
+  const { set: folded, fannedOut } = foldDecisions(set, [
+    { proposalId: 'a', approved: true, finalText: 'Enhance your experience with extras', fanOut: true },
+    // The human looked at the Ukrainian one and said no. That has to stand.
+    { proposalId: 'c', approved: false },
+  ]);
+
+  const byId = Object.fromEntries(folded.proposals.map((p) => [p.id, p]));
+  assert.equal(byId.a.status, 'approved');
+  assert.equal(byId.b.status, 'approved', 'carried to the untouched sibling');
+  assert.equal(byId.c.status, 'rejected', 'an explicit reject is not overwritten by a fan-out');
+  assert.equal(fannedOut, 1);
+});
+
+test('without the fan-out tick, siblings are left alone', () => {
+  const set = {
+    generatedAt: '', product: 't',
+    proposals: linkSiblings([
+      fakeProposal('a', 'messages/en/m.json'),
+      fakeProposal('b', 'messages/tr/m.json'),
+    ]),
+  };
+
+  const { set: folded, fannedOut } = foldDecisions(set, [{ proposalId: 'a', approved: true }]);
+  const byId = Object.fromEntries(folded.proposals.map((p) => [p.id, p]));
+
+  assert.equal(byId.a.status, 'approved');
+  assert.equal(byId.b.status, 'pending', 'one click must never change a file the human did not see');
+  assert.equal(fannedOut, 0);
+});
+
+test('the review file round-trips the fan-out tick', () => {
+  const set = {
+    generatedAt: '', product: 't',
+    proposals: linkSiblings([
+      fakeProposal('aaa1', 'messages/en/m.json'),
+      fakeProposal('bbb2', 'messages/tr/m.json'),
+    ]),
+  };
+
+  let md = renderReview(set);
+  assert.match(md, /SAME DECISION FOR ALL IDENTICAL COPIES \(1 other\)/);
+  assert.match(md, /Translation\./, 'the locale warning reaches the markdown path too');
+
+  md = md.replace('<!-- marketing-loop:aaa1 -->\n- [ ] APPROVE', '<!-- marketing-loop:aaa1 -->\n- [x] APPROVE')
+         .replace('- [ ] SAME DECISION FOR ALL IDENTICAL COPIES', '- [x] SAME DECISION FOR ALL IDENTICAL COPIES');
+
+  const decisions = collectReview(md);
+  const lead = decisions.find((d) => d.proposalId === 'aaa1');
+  assert.equal(lead.approved, true);
+  assert.equal(lead.fanOut, true);
+
+  const { fannedOut } = foldDecisions(set, decisions);
+  assert.equal(fannedOut, 1);
 });
 
 /* -------------------------------------------------------------- versioning */

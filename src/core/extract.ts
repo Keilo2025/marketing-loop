@@ -327,11 +327,29 @@ function tagContext(tag: string, attrs: string): string[] {
   return ctx;
 }
 
+/**
+ * Legal text. Checked before everything else, because `terms/pricing-terms.md`
+ * is a legal document that happens to mention pricing, and rewriting a clause
+ * to convert better is how a marketing tool creates a legal problem.
+ */
+const LEGAL =
+  /(terms|tos\b|privacy|policy|policies|legal|gdpr|ccpa|cookie|imprint|impressum|eula|disclaimer|licen[cs]e|\bdpa\b|compliance|refund|acceptable-?use|data-?protection)/;
+
+/**
+ * Documents written for the team, not the customer. These are the bulk of the
+ * noise in a repo that keeps planning notes in Markdown.
+ */
+const INTERNAL =
+  /(^|\/)(\.github|\.changeset|adr|rfcs?|specs?|notes|planning|roadmap|internal|scratch|prompts?|agents?|\.cursor|\.windsurf|\.clinerules|\.marketing-loop)(\/|$)|(changelog|contributing|code_of_conduct|security\.md|todo\.md|architecture\.md)/;
+
 export function inferSurface(relPath: string): Surface {
   const p = relPath.toLowerCase();
+
+  if (LEGAL.test(p)) return 'legal';
+  if (INTERNAL.test(p)) return 'internal';
   if (/(landing|marketing|\bhero\b|home|index\.html|\/site\/|\/www\/|\/web\/|\(marketing\))/.test(p)) return 'landing';
   if (/(email|mail|newsletter|templates?\/.*mail)/.test(p)) return 'email';
-  if (/(docs?|guide|handbook|readme)/.test(p)) return 'docs';
+  if (/(^|\/)(docs?|guides?|handbook)(\/|$)|readme\.md$/.test(p)) return 'docs';
   if (/(store|app-?store|play-?store|listing|metadata\/)/.test(p)) return 'store';
   if (/(pricing|checkout|signup|register|onboarding|upgrade)/.test(p)) return 'landing';
   return 'app';

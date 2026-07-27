@@ -7,7 +7,14 @@
  * agent brief both consume.
  */
 
-import type { CopyFinding, CopyItem, LoopConfig, ProductModel } from '../types.js';
+import {
+  DEFAULT_SURFACES,
+  type CopyFinding,
+  type CopyItem,
+  type LoopConfig,
+  type ProductModel,
+  type Surface,
+} from '../types.js';
 
 interface Rule {
   id: string;
@@ -235,12 +242,28 @@ export function analyse(
 
 const WEIGHT = { high: 3, medium: 2, low: 1 } as const;
 
+export interface Prioritised {
+  ranked: CopyItem[];
+  /** Held back because their surface is not in scope, counted per surface. */
+  outOfScope: Record<string, number>;
+}
+
 /** Ranks copy items by how much a rewrite would be worth. */
 export function prioritise(
   items: CopyItem[],
   findings: CopyFinding[],
   behaviorSubjects: string[] = [],
+  surfaces: Surface[] = DEFAULT_SURFACES,
 ): CopyItem[] {
+  return prioritiseDetailed(items, findings, behaviorSubjects, surfaces).ranked;
+}
+
+export function prioritiseDetailed(
+  items: CopyItem[],
+  findings: CopyFinding[],
+  behaviorSubjects: string[] = [],
+  surfaces: Surface[] = DEFAULT_SURFACES,
+): Prioritised {
   const score = new Map<string, number>();
 
   for (const finding of findings) {
@@ -252,11 +275,24 @@ export function prioritise(
     error: 2, meta: 2, body: 1, label: 1, nav: 0, unknown: 0,
   };
   const surfaceBoost: Record<string, number> = {
-    landing: 4, store: 3, email: 2, app: 1, docs: 0, unknown: 0,
+    landing: 4, store: 3, email: 2, app: 1, docs: 0, legal: 0, internal: 0, unknown: 0,
   };
 
-  return items
-    .filter((item) => score.has(item.id))
+  const inScope = new Set(surfaces);
+  const outOfScope: Record<string, number> = {};
+  const candidates: CopyItem[] = [];
+
+  for (const item of items) {
+    if (!score.has(item.id)) continue;
+    // Your terms of service having a passive voice finding is true and useless.
+    if (!inScope.has(item.surface)) {
+      outOfScope[item.surface] = (outOfScope[item.surface] ?? 0) + 1;
+      continue;
+    }
+    candidates.push(item);
+  }
+
+  const ranked = candidates
     .map((item) => {
       let s = score.get(item.id) ?? 0;
       s += kindBoost[item.kind] ?? 0;
@@ -267,6 +303,8 @@ export function prioritise(
     })
     .sort((a, b) => b.s - a.s)
     .map((x) => x.item);
+
+  return { ranked, outOfScope };
 }
 
 function matches(text: string, subject: string): boolean {

@@ -165,6 +165,42 @@ npx marketing-loop review --collect  # reads your ticks back
 
 Works over SSH, in a PR diff, on a phone.
 
+#### Repeated strings are one decision, not forty
+
+A localised app has the same string in every message bundle. Rather than make you approve `messages/en/`, `messages/tr/`, `messages/uk/` and nine more separately, the loop links proposals making the *identical* change to the *identical* string and offers to carry your decision:
+
+```
+3 other files make the identical change. Approve those too?
+  messages/tr/marketing.json:189
+  messages/uk/marketing.json:189
+  messages/de/marketing.json:189
+
+[ Approve all 4 ]  [ Just this one ]
+```
+
+In `review.md` it is a checkbox on the block:
+
+```
+- [x] APPROVE
+- [ ] REJECT
+- [x] SAME DECISION FOR ALL IDENTICAL COPIES (3 others)
+```
+
+Two rules make this safe to use:
+
+- **It never fans out on its own.** One click changes one file unless you say otherwise. Bulk approval that happens without asking would defeat the point of having a gate.
+- **An explicit decision always wins.** Reject the Ukrainian one, then approve-all from the English one, and the Ukrainian stays rejected. Fan-out only reaches proposals you have not ruled on.
+
+Grouping is strict — same original text, same replacement, same kind. Two buttons that both say `Submit` but are being rewritten differently are *not* siblings, and approving one will never drag in wording you were not shown.
+
+#### It will tell you when your translations are stale
+
+If the same English string turns up in `messages/tr/` and `messages/uk/`, those locales were never translated. The loop says so:
+
+> **Translation.** This string is identical across 4 locales (de, en, tr, uk). Untranslated source text in de, tr, uk — applying this fixes the English but those bundles still need re-translating.
+
+Worth knowing before you approve twelve files: fixing the copy does not fix the translation, and the fan-out is now propagating better English into bundles that should not contain English at all.
+
 ### 8. Apply is paranoid
 
 Only approved proposals. `before` must still match the file exactly — if the file changed since the scan, it refuses rather than guesses. If the text appears twice and the line number does not disambiguate it, it refuses. Every touched file is backed up first.
@@ -274,6 +310,10 @@ You get:
     "required": []
   },
 
+  // Which surfaces may be rewritten. Legal and internal are scanned and
+  // reported but never proposed on unless you add them here.
+  "surfaces": ["landing", "store", "email", "app"],
+
   "disabledPrinciples": ["scarcity-honest"],  // switch off techniques you never want used
   "protectedFiles": ["LICENSE", "CHANGELOG.md"],
   "maxProposals": 60
@@ -281,6 +321,39 @@ You get:
 ```
 
 **`allowedClaims` is the important one.** It is the list of things the loop is permitted to assert. Leave it empty and the copy cannot make a single external claim — which is the correct default, and the reason this tool does not hallucinate testimonials.
+
+### Surfaces — why your terms of service is left alone
+
+Every string in a repo is not marketing copy. Your privacy policy has passive voice; that finding is true and useless. Worse, a tool that rewrites an indemnity clause to convert better has created a legal problem, not a conversion win.
+
+So each file gets a surface, and only some are in scope:
+
+| surface | in scope by default | what lands here |
+| --- | --- | --- |
+| `landing` | yes | marketing pages, pricing, signup, onboarding |
+| `store` | yes | App Store / Play Store listings and metadata |
+| `email` | yes | transactional and lifecycle email templates |
+| `app` | yes | in-product copy, empty states, errors |
+| `docs` | **no** | guides, handbooks, READMEs |
+| `legal` | **no** | terms, privacy, GDPR, cookie, EULA, refund policy |
+| `internal` | **no** | ADRs, RFCs, changelogs, planning notes, agent rules files |
+
+Out-of-scope strings are still scanned and counted — you just get told, rather than getting forty proposals to rewrite your ToS headings:
+
+```
+7 strings skipped as out of scope: 3 docs · 4 legal
+Legal text is never rewritten by default — persuasive terms of service are a liability.
+```
+
+If your docs genuinely are the funnel, opt them in:
+
+```json
+"surfaces": ["landing", "store", "email", "app", "docs"]
+```
+
+### maxProposals covers the whole review
+
+`maxProposals` is the cap on the *entire* review, not just the mechanical rewrites. The budget splits roughly 60/40 between the engine and the open items handed to your agent, so a full engine run can never crowd out the headline and CTA work — which is the half that actually moves a funnel.
 
 ---
 
@@ -324,6 +397,9 @@ Not by default. Everything is local. With `--llm`, the brief — which includes 
 
 **I typed `marketing-loop` in Cursor and nothing came up.**
 Two different things share the name. `npx marketing-loop` is the CLI, run from a terminal. `/marketing-loop` — with the slash — is the Cursor command, and it only exists after you run `npx marketing-loop install` in that repo. Rules alone will not show up in any menu; they are passive context.
+
+**My review is full of legal headings and internal docs.**
+Update to 0.3.0. Before that, every Markdown file in the repo was fair game. Now `legal`, `internal` and `docs` are out of scope by default — see [Surfaces](#surfaces--why-your-terms-of-service-is-left-alone).
 
 **It missed strings in my repo.**
 The extractor is conservative on purpose; false positives waste more of your time than false negatives. Add directories to `include`, or move copy into a JSON or Markdown content file where it is unambiguous.

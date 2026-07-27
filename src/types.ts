@@ -19,7 +19,17 @@ export type CopyKind =
   | 'pricing'
   | 'unknown';
 
-export type Surface = 'landing' | 'app' | 'email' | 'docs' | 'store' | 'unknown';
+export type Surface = 'landing' | 'app' | 'email' | 'docs' | 'store' | 'legal' | 'internal' | 'unknown';
+
+/**
+ * Surfaces the loop is allowed to rewrite.
+ *
+ * `legal` and `internal` are deliberately absent from the default. Terms of
+ * service, privacy policies and internal planning documents are not conversion
+ * copy, and a tool that cheerfully rewrites your indemnity clause to be more
+ * persuasive is a liability rather than a feature.
+ */
+export const DEFAULT_SURFACES: Surface[] = ['landing', 'store', 'email', 'app'];
 
 /** A single string of user-facing copy located in the codebase. */
 export interface CopyItem {
@@ -167,6 +177,19 @@ export interface Proposal {
   warnings?: string[];
   /** Who wrote it: the deterministic engine, the host agent, or an API model. */
   author: 'engine' | 'agent' | 'llm';
+  /**
+   * Ids of proposals elsewhere in the repo making the identical change to the
+   * identical string. Localised message bundles produce dozens of these, and
+   * asking a human to click through all of them separately is how a review gets
+   * abandoned half-finished.
+   */
+  siblings?: string[];
+  /**
+   * Set when the siblings live in locale directories. Editing an English string
+   * inside `messages/tr/` is a translation problem as much as a copy one, and
+   * the human needs telling before they approve twelve of them.
+   */
+  localeWarning?: string;
 }
 
 export interface ProposalSet {
@@ -204,8 +227,17 @@ export interface LoopConfig {
   audience: string;
   /** Claims the copy is allowed to make. Anything else is invention. */
   allowedClaims: string[];
-  /** Hard limit on how many proposals a single run may produce. */
+  /**
+   * Hard limit on how many proposals a single run may produce, counting
+   * everything an agent or an API model added. A review nobody finishes is a
+   * review that did not happen.
+   */
   maxProposals: number;
+  /**
+   * Which product surfaces may be rewritten. Legal and internal surfaces are
+   * scanned and reported but never proposed on unless listed here.
+   */
+  surfaces?: Surface[];
   /** Persuasion techniques explicitly switched off for this project. */
   disabledPrinciples: string[];
   /** Never touch these files even if they contain copy. */

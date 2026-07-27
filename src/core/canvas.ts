@@ -62,6 +62,38 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
       });
     }
 
+    /**
+     * Carry one decision across every proposal making the identical change.
+     * Deliberately a separate endpoint from /api/decide: fanning out is always
+     * something the human asked for, never something that happens because they
+     * clicked once.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/decide-group') {
+      return body(req, (data) => {
+        const { id, status, edited } = data as { id: string; status: string; edited?: string };
+        const lead = set.proposals.find((p) => p.id === id);
+        if (!lead) return json(res, 404, { error: 'unknown proposal' });
+        if (status !== 'approved' && status !== 'rejected') {
+          return json(res, 400, { error: 'group decisions must be approve or reject' });
+        }
+
+        const text = typeof edited === 'string' && edited.trim() ? edited.trim() : undefined;
+        const changed: string[] = [];
+
+        for (const sibId of [id, ...(lead.siblings ?? [])]) {
+          const sib = set.proposals.find((p) => p.id === sibId);
+          // Never overturn a decision the human already made on a sibling.
+          if (!sib || (sib.id !== id && sib.status !== 'pending')) continue;
+          sib.status = status;
+          if (text) sib.edited = text !== sib.after ? text : undefined;
+          changed.push(sib.id);
+        }
+
+        writeJson(proposalsPath, set);
+        return json(res, 200, { ok: true, changed, proposals: set.proposals });
+      });
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/apply') {
       return body(req, (data) => {
         const { dryRun } = data as { dryRun?: boolean };
@@ -196,6 +228,24 @@ const PAGE = `<!doctype html>
     background: var(--warn-soft); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
     border-radius: 8px; padding: 9px 12px; font-size: 13px; margin-bottom: 12px;
   }
+  .tag.dupe { background: var(--warn-soft); border-color: transparent; color: var(--warn); font-weight: 600; }
+  .locale {
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0; padding: 9px 12px; font-size: 13px; margin-bottom: 12px;
+  }
+  .fanout {
+    margin-top: 14px; padding: 13px 15px;
+    background: var(--warn-soft);
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+    border-radius: 9px; font-size: 13.5px;
+  }
+  .fanout p { margin: 0 0 8px; }
+  .fanlist { margin: 0 0 11px; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
+  .fanlist code { font-size: 12px; }
+  .fanbtns { display: flex; gap: 8px; }
+  .fanyes { background: var(--accent); color: #fff; border-color: transparent; }
+  .fandone { margin: 0; color: var(--accent); font-weight: 550; }
   .actions { display: flex; gap: 8px; align-items: center; }
   button {
     font: inherit; font-size: 13.5px; font-weight: 550; border-radius: 8px;
@@ -273,6 +323,12 @@ function card(p, i) {
     ? '<details><summary>Evidence &amp; source</summary><ul>' +
       p.evidence.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('') + '</ul></details>' : '';
 
+  var pending = pendingSiblings(p);
+  var dupeTag = (p.siblings || []).length
+    ? '<span class="tag dupe">' + ((p.siblings.length + 1)) + ' identical</span>' : '';
+  var localeNote = p.localeWarning
+    ? '<div class="locale"><b>Translation.</b> ' + esc(p.localeWarning) + '</div>' : '';
+
   return '' +
   '<article class="card" data-id="' + p.id + '" data-status="' + esc(p.status) + '" id="card-' + p.id + '">' +
     '<div class="meta">' +
@@ -280,8 +336,10 @@ function card(p, i) {
       '<span class="tag">' + esc(p.file) + ':' + p.line + '</span>' +
       '<span class="tag">' + confidence + '% confident</span>' +
       '<span class="tag">' + esc(p.author) + '</span>' +
+      dupeTag +
       (p.principles || []).map(function (x) { return '<span class="tag">' + esc(x) + '</span>'; }).join('') +
     '</div>' +
+    localeNote +
     warnings +
     '<div class="pair">' +
       '<div class="side"><h4>Now</h4><div class="text before">' + esc(p.before) + '</div></div>' +
@@ -297,7 +355,15 @@ function card(p, i) {
       '<button class="yes" data-id="' + p.id + '" aria-pressed="' + (p.status === 'approved') + '">Approve</button>' +
       '<button class="no" data-id="' + p.id + '" aria-pressed="' + (p.status === 'rejected') + '">Reject</button>' +
     '</div>' +
+    '<div class="fanout" id="fan-' + p.id + '" hidden></div>' +
   '</article>';
+}
+
+/** Siblings nobody has ruled on yet — the only ones a fan-out should touch. */
+function pendingSiblings(p) {
+  return (p.siblings || [])
+    .map(function (id) { return state.proposals.find(function (x) { return x.id === id; }); })
+    .filter(function (x) { return x && x.status === 'pending'; });
 }
 
 function decide(id, status, edited) {
@@ -309,12 +375,77 @@ function decide(id, status, edited) {
     if (!data.proposal) return;
     var idx = state.proposals.findIndex(function (p) { return p.id === id; });
     if (idx >= 0) state.proposals[idx] = data.proposal;
-    var el = document.getElementById('card-' + id);
-    if (el) el.setAttribute('data-status', data.proposal.status);
-    var yes = document.querySelector('.yes[data-id="' + id + '"]');
-    var no = document.querySelector('.no[data-id="' + id + '"]');
-    if (yes) yes.setAttribute('aria-pressed', String(data.proposal.status === 'approved'));
-    if (no) no.setAttribute('aria-pressed', String(data.proposal.status === 'rejected'));
+    paintCard(data.proposal);
+    counts();
+    offerFanout(data.proposal);
+  });
+}
+
+function paintCard(p) {
+  var el = document.getElementById('card-' + p.id);
+  if (el) el.setAttribute('data-status', p.status);
+  var yes = document.querySelector('.yes[data-id="' + p.id + '"]');
+  var no = document.querySelector('.no[data-id="' + p.id + '"]');
+  if (yes) yes.setAttribute('aria-pressed', String(p.status === 'approved'));
+  if (no) no.setAttribute('aria-pressed', String(p.status === 'rejected'));
+}
+
+/**
+ * Ask before carrying a decision to identical strings elsewhere. Never assume:
+ * the whole point of this tool is that a person saw each change before it
+ * reached the code, and silently approving eleven files on one click would
+ * throw that away for the sake of a click.
+ */
+function offerFanout(p) {
+  var box = document.getElementById('fan-' + p.id);
+  if (!box) return;
+  box.hidden = true;
+  box.innerHTML = '';
+
+  if (p.status !== 'approved' && p.status !== 'rejected') return;
+
+  var others = pendingSiblings(p);
+  if (!others.length) return;
+
+  var verb = p.status === 'approved' ? 'Approve' : 'Reject';
+  var files = others.slice(0, 8).map(function (o) { return '<li><code>' + esc(o.file) + ':' + o.line + '</code></li>'; }).join('');
+  var more = others.length > 8 ? '<li>and ' + (others.length - 8) + ' more</li>' : '';
+
+  box.innerHTML =
+    '<p><b>' + others.length + ' other file' + (others.length === 1 ? '' : 's') +
+      ' make' + (others.length === 1 ? 's' : '') + ' the identical change.</b> ' + verb + ' those too?</p>' +
+    '<ul class="fanlist">' + files + more + '</ul>' +
+    '<div class="fanbtns">' +
+      '<button class="fanyes" data-id="' + p.id + '" data-status="' + p.status + '">' +
+        verb + ' all ' + (others.length + 1) + '</button>' +
+      '<button class="fanno" data-id="' + p.id + '">Just this one</button>' +
+    '</div>';
+  box.hidden = false;
+
+  // This box is built after bind() ran, so it wires its own buttons.
+  var yes = box.querySelector('.fanyes');
+  if (yes) yes.onclick = function () { fanout(p.id, p.status); };
+  var no = box.querySelector('.fanno');
+  if (no) no.onclick = function () { box.hidden = true; box.innerHTML = ''; };
+}
+
+function fanout(id, status) {
+  var textarea = document.querySelector('.final[data-id="' + id + '"]');
+  return fetch('/api/decide-group', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: id, status: status, edited: textarea ? textarea.value : undefined })
+  }).then(function (r) { return r.json(); }).then(function (data) {
+    if (!data.proposals) return;
+    state.proposals = data.proposals;
+    var box = document.getElementById('fan-' + id);
+    if (box) {
+      box.innerHTML = '<p class="fandone">' + data.changed.length + ' proposals set to ' + status + '.</p>';
+    }
+    data.changed.forEach(function (cid) {
+      var p = state.proposals.find(function (x) { return x.id === cid; });
+      if (p) paintCard(p);
+    });
     counts();
   });
 }
