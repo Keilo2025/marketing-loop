@@ -343,10 +343,170 @@ test('dry run changes nothing on disk', () => {
   };
 
   const results = applyProposals(set, { cwd: tmp, config, backupDir: path.join(tmp, 'bk'), dryRun: true });
-  assert.equal(results[0].ok, true);
+  assert.equal(results[0].ok, true, results[0].reason);
   assert.equal(fs.readFileSync(path.join(tmp, file), 'utf8'), original);
   assert.equal(set.proposals[0].status, 'approved', 'status is not marked applied on a dry run');
 
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+function secureApplyState(tmp, changes, applyConfig = {
+  ...config,
+  include: ['.'],
+  exclude: [],
+  protectedFiles: [],
+}) {
+  const scan = scanRepo(tmp, applyConfig, 'run-apply');
+  const inventory = {
+    schemaVersion: 4,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    repositoryRoot: tmp,
+    filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy,
+    truncated: scan.truncated,
+    items: scan.items,
+  };
+  const proposals = changes.map((change, index) => {
+    const item = scan.items.find((candidate) =>
+      candidate.file === change.file && candidate.text === change.before
+    );
+    assert.ok(item, `missing inventory item for ${change.file}: ${change.before}`);
+    return {
+      id: `secure-${index}`, copyId: item.id, file: item.file, line: item.line,
+      kind: item.kind, before: item.text, after: change.after, alternatives: [],
+      rationale: 'Names the outcome.', problemSolved: 'The original was vague.',
+      principles: [], evidence: [], confidence: 0.8, status: 'pending', author: 'engine',
+    };
+  });
+  const set = {
+    schemaVersion: 4,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    product: 'test',
+    proposals,
+  };
+  const decisions = {
+    schemaVersion: 4,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    decisions: proposals.map((proposal) => ({
+      proposalId: proposal.id,
+      proposalDigest: proposalDigest(proposal, proposal.after),
+      decision: 'approved',
+      finalText: proposal.after,
+      source: 'markdown',
+      decidedAt: new Date().toISOString(),
+    })),
+  };
+  return { set, inventory, decisions, applyConfig };
+}
+
+test('secure apply uses the approval ledger, exact source span, and representation encoding', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-secure-'));
+  const file = 'messages.json';
+  fs.writeFileSync(path.join(tmp, file), '{"cta":"Get started today"}\n');
+  const state = secureApplyState(tmp, [{
+    file,
+    before: 'Get started today',
+    after: 'Get "my" audit\nnow',
+  }]);
+
+  const results = applyProposals(state.set, {
+    cwd: tmp,
+    config: state.applyConfig,
+    backupDir: path.join(tmp, '.marketing-loop', 'backups'),
+    inventory: state.inventory,
+    decisions: state.decisions,
+  });
+
+  assert.equal(results[0].ok, true, results[0].reason);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(tmp, file), 'utf8')),
+    { cta: 'Get "my" audit\nnow' },
+  );
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('secure apply rejects traversal, protected files, and symlink targets', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-confine-'));
+  fs.writeFileSync(path.join(tmp, 'page.html'), '<button>Start my audit</button>\n');
+  const state = secureApplyState(tmp, [{
+    file: 'page.html',
+    before: 'Start my audit',
+    after: 'Run my audit',
+  }]);
+
+  const proposal = state.set.proposals[0];
+  const item = state.inventory.items.find((candidate) => candidate.id === proposal.copyId);
+  item.file = '../outside.html';
+  proposal.file = '../outside.html';
+  state.decisions.decisions[0].proposalDigest = proposalDigest(proposal, proposal.after);
+  let results = applyProposals(state.set, {
+    cwd: tmp, config: state.applyConfig, backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory, decisions: state.decisions,
+  });
+  assert.match(results[0].reason, /inside the repository|inventory digest/i);
+
+  item.file = 'page.html';
+  proposal.file = 'page.html';
+  state.decisions.decisions[0].proposalDigest = proposalDigest(proposal, proposal.after);
+  const protectedConfig = { ...state.applyConfig, protectedFiles: ['./page.html'] };
+  results = applyProposals(state.set, {
+    cwd: tmp, config: protectedConfig, backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory, decisions: state.decisions,
+  });
+  assert.match(results[0].reason, /protected/i);
+
+  fs.renameSync(path.join(tmp, 'page.html'), path.join(tmp, 'real.html'));
+  fs.symlinkSync('real.html', path.join(tmp, 'page.html'));
+  results = applyProposals(state.set, {
+    cwd: tmp, config: state.applyConfig, backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory, decisions: state.decisions,
+  });
+  assert.match(results[0].reason, /symbolic link/i);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('secure apply preflights the whole batch and writes nothing when one file is stale', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-atomic-'));
+  fs.writeFileSync(path.join(tmp, 'a.html'), '<button>Start first audit</button>\n');
+  fs.writeFileSync(path.join(tmp, 'b.html'), '<button>Start second audit</button>\n');
+  const state = secureApplyState(tmp, [
+    { file: 'a.html', before: 'Start first audit', after: 'Run first audit' },
+    { file: 'b.html', before: 'Start second audit', after: 'Run second audit' },
+  ]);
+  fs.writeFileSync(path.join(tmp, 'b.html'), '<button>Changed after scan</button>\n');
+
+  const results = applyProposals(state.set, {
+    cwd: tmp, config: state.applyConfig, backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory, decisions: state.decisions,
+  });
+
+  assert.equal(results.some((result) => !result.ok), true);
+  assert.equal(fs.readFileSync(path.join(tmp, 'a.html'), 'utf8'), '<button>Start first audit</button>\n');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('changing an approved proposal after review invalidates the entire apply batch', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-forged-'));
+  fs.writeFileSync(path.join(tmp, 'page.html'), '<button>Start my audit</button>\n');
+  const state = secureApplyState(tmp, [{
+    file: 'page.html',
+    before: 'Start my audit',
+    after: 'Run my audit',
+  }]);
+  state.set.proposals[0].after = 'Last chance — offer ends tonight';
+
+  const results = applyProposals(state.set, {
+    cwd: tmp, config: state.applyConfig, backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory, decisions: state.decisions,
+  });
+
+  assert.match(results[0].reason, /digest/i);
+  assert.equal(fs.readFileSync(path.join(tmp, 'page.html'), 'utf8'), '<button>Start my audit</button>\n');
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

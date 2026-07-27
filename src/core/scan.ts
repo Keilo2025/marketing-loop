@@ -41,14 +41,7 @@ export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()):
   }
 
   const unique = dedupe(items);
-  const inventoryDigest = hashText(JSON.stringify(unique.map((item) => ({
-    id: item.id,
-    file: item.file,
-    fileHash: item.fileHash,
-    start: item.source?.start,
-    end: item.source?.end,
-    raw: item.source?.raw,
-  }))));
+  const inventoryDigest = digestInventoryItems(unique);
 
   return {
     items: unique,
@@ -58,6 +51,22 @@ export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()):
     runId,
     inventoryDigest,
   };
+}
+
+export function digestInventoryItems(items: CopyItem[]): string {
+  return hashText(JSON.stringify(items.map((item) => ({
+    id: item.id,
+    file: item.file,
+    line: item.line,
+    text: item.text,
+    kind: item.kind,
+    fileHash: item.fileHash,
+    start: item.source?.start,
+    end: item.source?.end,
+    raw: item.source?.raw,
+    representation: item.source?.representation,
+    applicable: item.source?.applicable,
+  }))));
 }
 
 function normalizedRoots(cwd: string, includes: string[]): string[] {
