@@ -40,7 +40,7 @@ import type {
 import { exists, readJson, writeJson, writeText } from './util/fsx.js';
 import { c, log, table } from './util/log.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 
 interface Flags {
   _: string[];
@@ -411,6 +411,7 @@ function cmdInstall(cwd: string, flags: Flags): void {
     for (const target of AGENT_TARGETS) {
       log.info(`  ${c.bold(target.id.padEnd(12))} ${c.grey(target.file)}`);
       log.dim(`    ${target.name}`);
+      if (target.commandDir) log.dim(`    slash commands → ${target.commandDir}/`);
       if (target.note) log.dim(`    ${target.note}`);
     }
     return;
@@ -435,18 +436,35 @@ function cmdInstall(cwd: string, flags: Flags): void {
   }
 
   const results = installAgents(cwd, targets, { force: Boolean(flags.force) });
+  const commands = results.filter((r) => r.command);
+  const rules = results.filter((r) => !r.command);
 
-  log.title('Installed');
-  for (const result of results) {
+  if (commands.length) {
+    log.title('Slash commands — type / in your agent and pick one');
+    for (const result of commands) {
+      const mark = result.action === 'unchanged' ? c.grey('=') : c.green('✓');
+      log.info(`  ${mark} ${c.cyan('/' + path.basename(result.file, '.md')).padEnd(28)} ${c.grey(result.file)}`);
+    }
+  }
+
+  log.title('Rules — background context, not something you invoke');
+  for (const result of rules) {
     const mark = result.action === 'unchanged' ? c.grey('=') : c.green('✓');
     log.info(`  ${mark} ${result.file.padEnd(46)} ${c.grey(result.action)}`);
   }
 
   log.blank();
-  log.dim(`${results.length} agent target${results.length === 1 ? '' : 's'}. Add more with --agents cursor,cline or everything with --all.`);
+  log.dim(`${targets.length} agent${targets.length === 1 ? '' : 's'}. Add more with --agents cursor,cline or everything with --all.`);
+
+  const noCommands = targets.filter((t) => !t.commandDir && t.id !== 'claude-code');
+  if (noCommands.length) {
+    log.blank();
+    log.dim(`${noCommands.map((t) => t.id).join(', ')} have no slash-command directory — for those, ask the agent to "run the marketing loop" and it will pick up the rule.`);
+  }
+
   log.blank();
-  log.info(`Claude Code users get more from the plugin than the rules file:`);
-  log.info(`  ${c.cyan('/plugin marketplace add marketing-loop')}`);
+  log.info(`Claude Code gets more from the plugin than the rules file:`);
+  log.info(`  ${c.cyan('/plugin marketplace add keilo2000/marketing-loop')}`);
   log.info(`  ${c.cyan('/plugin install marketing-loop@marketing-loop')}`);
   log.blank();
   log.info(`Next: ${c.cyan('npx marketing-loop init')} then ${c.cyan('npx marketing-loop scan')}`);

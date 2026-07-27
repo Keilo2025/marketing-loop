@@ -20,8 +20,138 @@ export interface AgentTarget {
   /** Paths that prove the agent is in use here. */
   detect: string[];
   format: 'markdown' | 'mdc' | 'section';
+  /**
+   * Directory this agent scans for invokable slash commands, if it has one.
+   *
+   * Rules and commands are not the same thing and installing only the first is
+   * the reason someone types "marketing-loop" into Cursor and sees nothing: a
+   * rule is passive context the agent may or may not decide to pull in, while a
+   * command is a file the user can actually find and run.
+   */
+  commandDir?: string;
+  /** Frontmatter style the command files need. */
+  commandFormat?: 'plain' | 'described';
   note?: string;
 }
+
+/** The three things a person actually wants to invoke. */
+interface AgentCommand {
+  name: string;
+  description: string;
+  body: string;
+}
+
+const COMMANDS: AgentCommand[] = [
+  {
+    name: 'marketing-loop',
+    description: 'Rewrite this project\'s copy to sell the problem it solves, then open the approval canvas',
+    body: `Run the marketing copy loop on this repository.
+
+## 1. Set up if needed
+
+If \`marketing-loop.config.json\` does not exist:
+
+\`\`\`bash
+npx marketing-loop@latest init
+\`\`\`
+
+Then fill in two fields properly, using the codebase and README:
+
+- \`audience\` — who this is actually for, in plain words
+- \`allowedClaims\` — facts the copy is cleared to state. **Ask me for these.** Anything not listed, the copy may not claim.
+
+If \`marketing-data/\` is empty, tell me that one funnel export from GA4, PostHog or Amplitude dropped in there will change which strings get worked on — and that without it the priority order is an informed guess.
+
+## 2. Scan and propose
+
+\`\`\`bash
+npx marketing-loop@latest propose
+\`\`\`
+
+## 3. Read the brief
+
+Read \`.marketing-loop/brief.md\` in full: the product model inferred from the code, the behavioural evidence, the voice constraints, the persuasion library, and the open items.
+
+## 4. Verify, then write
+
+For each open item:
+
+1. Open the code that implements whatever the string is talking about. Find the real detail — limits, formats, timings, what it actually does. That detail is the copy.
+2. Write the rewrite from that detail, not from the feature name.
+3. Give at least one genuine alternative, so I get a real choice rather than a rubber stamp.
+
+Append to \`.marketing-loop/proposals.json\`, merging with what is there. \`before\` must match the source character for character — copy it from the brief, do not retype it.
+
+**Never invent a fact.** No user counts, testimonials, percentages, guarantees or timings unless they are in the code, in \`allowedClaims\`, or in the brief. Where a rewrite wants a number you do not have, write it without and add \`NEEDS-FACT: <question>\` to that proposal's evidence array.
+
+**No dark patterns.** Fabricated urgency or scarcity, confirmshaming, hidden billing, fake social proof, decline options framed as mistakes. The guardrails reject these anyway.
+
+**Copy only.** No component restructuring, no new props, no logic, no styling.
+
+## 5. Hand back
+
+Summarise: how many proposals, the three that matter most with before → after, every \`NEEDS-FACT\` question gathered into one list, and anything the data pointed at that copy alone cannot fix.
+
+Then tell me to run \`npx marketing-loop review --ui\`. Do not run \`apply\` unless I ask.`,
+  },
+  {
+    name: 'copy-audit',
+    description: 'Report what this project\'s copy is costing in conversions — no files changed',
+    body: `Audit the user-facing copy in this repository. Change nothing.
+
+\`\`\`bash
+npx marketing-loop@latest scan
+\`\`\`
+
+Read \`.marketing-loop/findings.json\`, \`product.json\` and \`behavior.json\`, then write the report.
+
+## What this product actually does
+
+One paragraph written from the code — not from the README's description of itself. Where the code and the marketing disagree, that gap is usually the most valuable finding in the audit.
+
+## The five strings costing the most
+
+In priority order, each with: the string and \`file:line\`, what is wrong in one sentence a founder would agree with, the direction it should go (not finished copy), and the evidence — the diagnostic rule plus any behavioural data pointing at it.
+
+## Patterns
+
+Rules that fired repeatedly matter more than any single string. "Every CTA on the site is generic" is a fixable habit; one bad button is a typo.
+
+## What copy cannot fix
+
+Be straight about this. If the funnel drops 60% at a form with four required fields, that is not a headline problem.
+
+## Next
+
+If \`marketing-data/\` was empty, name the single export that would sharpen the priority order most and where to get it. Then offer to run the full loop.`,
+  },
+  {
+    name: 'copy-review',
+    description: 'Open the human approval canvas for pending copy changes',
+    body: `Check that \`.marketing-loop/proposals.json\` exists and has pending proposals. If not, run the marketing-loop command first.
+
+\`\`\`bash
+npx marketing-loop@latest review --ui
+\`\`\`
+
+Tell me:
+
+- the URL it is serving on
+- that each proposal shows the current copy, the rewrite, alternatives, the reasoning and the evidence — and that the rewrite box is editable, so whatever I type wins
+- shortcuts: \`j\`/\`k\` to move, \`a\` to approve, \`r\` to reject
+- that nothing is written until I press **Apply**, and \`npx marketing-loop revert\` undoes the last run
+
+If I would rather not open a browser:
+
+\`\`\`bash
+npx marketing-loop@latest review           # writes review.md with tick boxes
+npx marketing-loop@latest review --collect # reads my ticks back
+npx marketing-loop@latest apply
+\`\`\`
+
+Do not approve anything on my behalf.`,
+  },
+];
 
 export const AGENT_TARGETS: AgentTarget[] = [
   {
@@ -38,7 +168,7 @@ export const AGENT_TARGETS: AgentTarget[] = [
     file: 'CLAUDE.md',
     detect: ['CLAUDE.md', '.claude'],
     format: 'section',
-    note: 'For the full experience install the plugin instead: /plugin marketplace add marketing-loop',
+    note: 'For the full experience install the plugin instead: /plugin marketplace add keilo2000/marketing-loop',
   },
   {
     id: 'cursor',
@@ -46,6 +176,9 @@ export const AGENT_TARGETS: AgentTarget[] = [
     file: '.cursor/rules/marketing-loop.mdc',
     detect: ['.cursor', '.cursorrules'],
     format: 'mdc',
+    commandDir: '.cursor/commands',
+    commandFormat: 'plain',
+    note: 'Type / in the Agent input to run them.',
   },
   {
     id: 'windsurf',
@@ -53,6 +186,9 @@ export const AGENT_TARGETS: AgentTarget[] = [
     file: '.windsurf/rules/marketing-loop.md',
     detect: ['.windsurf', '.windsurfrules'],
     format: 'markdown',
+    commandDir: '.windsurf/workflows',
+    commandFormat: 'described',
+    note: 'Workflows are invoked in Cascade with /marketing-loop.',
   },
   {
     id: 'cline',
@@ -60,6 +196,8 @@ export const AGENT_TARGETS: AgentTarget[] = [
     file: '.clinerules/marketing-loop.md',
     detect: ['.clinerules'],
     format: 'markdown',
+    commandDir: '.clinerules/workflows',
+    commandFormat: 'plain',
     note: 'Cline does not read AGENTS.md, so it needs its own copy.',
   },
   {
@@ -141,6 +279,8 @@ export interface InstallResult {
   target: AgentTarget;
   file: string;
   action: 'created' | 'updated' | 'unchanged' | 'skipped';
+  /** True when this file is an invokable slash command rather than a rule. */
+  command?: boolean;
 }
 
 export function detectAgents(cwd: string): AgentTarget[] {
@@ -157,6 +297,22 @@ export function install(
   for (const target of targets) {
     const abs = path.join(cwd, target.file);
     const block = renderBlock(target);
+
+    // Commands first — these are the ones a person can actually find.
+    if (target.commandDir) {
+      for (const command of COMMANDS) {
+        const rel = path.join(target.commandDir, `${command.name}.md`);
+        const commandAbs = path.join(cwd, rel);
+        const content = renderCommand(command, target.commandFormat ?? 'plain');
+        const existed = exists(commandAbs);
+        if (existed && read(commandAbs) === content && !opts.force) {
+          results.push({ target, file: rel, action: 'unchanged', command: true });
+          continue;
+        }
+        writeText(commandAbs, content);
+        results.push({ target, file: rel, action: existed ? 'updated' : 'created', command: true });
+      }
+    }
 
     if (!exists(abs)) {
       writeText(abs, target.format === 'section' ? `${block}\n` : block);
@@ -202,6 +358,17 @@ export function uninstall(cwd: string, targets: AgentTarget[]): string[] {
   const removed: string[] = [];
 
   for (const target of targets) {
+    if (target.commandDir) {
+      for (const command of COMMANDS) {
+        const rel = path.join(target.commandDir, `${command.name}.md`);
+        const commandAbs = path.join(cwd, rel);
+        if (!exists(commandAbs)) continue;
+        if (!read(commandAbs).includes('marketing-loop')) continue;
+        fs.rmSync(commandAbs);
+        removed.push(rel);
+      }
+    }
+
     const abs = path.join(cwd, target.file);
     if (!exists(abs)) continue;
 
@@ -226,6 +393,20 @@ export function uninstall(cwd: string, targets: AgentTarget[]): string[] {
 }
 
 /* ------------------------------------------------------------ the content */
+
+/**
+ * Command files. The filename is the command name in every agent that supports
+ * them, so `marketing-loop.md` becomes `/marketing-loop`.
+ */
+function renderCommand(command: AgentCommand, format: 'plain' | 'described'): string {
+  const body = `${command.body.trim()}\n`;
+
+  if (format === 'described') {
+    return ['---', `description: ${command.description}`, '---', '', body].join('\n');
+  }
+
+  return `# ${command.description}\n\n${body}`;
+}
 
 function renderBlock(target: AgentTarget): string {
   const body = INSTRUCTIONS.trim();

@@ -10,6 +10,7 @@ import { applyProposals } from '../dist/core/apply.js';
 import { loadBehavior, parseDelimited } from '../dist/core/behavior.js';
 import { extractFromFile, looksLikeCopy } from '../dist/core/extract.js';
 import { applyGuardrails } from '../dist/core/guardrails.js';
+import { AGENT_TARGETS, install, uninstall } from '../dist/core/install.js';
 import { buildProductModel } from '../dist/core/product.js';
 import { fixArticles, propose } from '../dist/core/propose.js';
 import { PRINCIPLES } from '../dist/core/psychology.js';
@@ -339,6 +340,87 @@ test('dry run changes nothing on disk', () => {
   assert.equal(set.proposals[0].status, 'approved', 'status is not marked applied on a dry run');
 
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+/* ------------------------------------------------------------------ install */
+
+test('agents with a command directory get invokable slash commands, not just rules', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-install-'));
+  const targets = AGENT_TARGETS.filter((t) => ['cursor', 'windsurf', 'cline'].includes(t.id));
+
+  const results = install(tmp, targets);
+
+  // The bug this covers: shipping only .cursor/rules means typing
+  // "marketing-loop" in Cursor finds nothing, because a rule is not a command.
+  for (const dir of ['.cursor/commands', '.windsurf/workflows', '.clinerules/workflows']) {
+    for (const name of ['marketing-loop', 'copy-audit', 'copy-review']) {
+      assert.ok(
+        fs.existsSync(path.join(tmp, dir, `${name}.md`)),
+        `missing ${dir}/${name}.md`,
+      );
+    }
+  }
+
+  assert.equal(results.filter((r) => r.command).length, 9);
+  assert.equal(results.filter((r) => !r.command).length, 3, 'rules are still installed too');
+
+  // Windsurf workflows need frontmatter; Cursor commands must not have it.
+  const workflow = fs.readFileSync(path.join(tmp, '.windsurf/workflows/marketing-loop.md'), 'utf8');
+  assert.match(workflow, /^---\ndescription: /);
+  const cursorCommand = fs.readFileSync(path.join(tmp, '.cursor/commands/marketing-loop.md'), 'utf8');
+  assert.equal(cursorCommand.startsWith('---'), false);
+
+  // Re-running is a no-op.
+  const second = install(tmp, targets);
+  assert.equal(second.every((r) => r.action === 'unchanged'), true);
+
+  // Uninstall takes the commands with it.
+  uninstall(tmp, targets);
+  assert.equal(fs.existsSync(path.join(tmp, '.cursor/commands/marketing-loop.md')), false);
+  assert.equal(fs.existsSync(path.join(tmp, '.windsurf/workflows/copy-audit.md')), false);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('AGENTS.md section installs and strips cleanly around existing content', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-agents-'));
+  fs.writeFileSync(path.join(tmp, 'AGENTS.md'), '# My project\n\nExisting instructions.\n');
+  const target = AGENT_TARGETS.filter((t) => t.id === 'agents-md');
+
+  install(tmp, target);
+  let content = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8');
+  assert.ok(content.includes('Existing instructions.'), 'never clobbers what was there');
+  assert.ok(content.includes('marketing-loop:start'));
+
+  install(tmp, target);
+  content = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8');
+  assert.equal(content.match(/marketing-loop:start/g).length, 1, 'no duplicate blocks');
+
+  uninstall(tmp, target);
+  content = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8');
+  assert.equal(content.includes('marketing-loop'), false);
+  assert.ok(content.includes('Existing instructions.'));
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+/* -------------------------------------------------------------- versioning */
+
+test('every version number in the repo agrees', () => {
+  const root = path.join(here, '..');
+  const read = (p) => JSON.parse(fs.readFileSync(path.join(root, p), 'utf8'));
+
+  const pkg = read('package.json');
+  const plugin = read('.claude-plugin/plugin.json');
+  const market = read('.claude-plugin/marketplace.json');
+  const cli = fs.readFileSync(path.join(root, 'src/cli.ts'), 'utf8');
+  const cliVersion = /const VERSION = '([^']+)'/.exec(cli)?.[1];
+
+  // Four places, nothing that syncs them. This test is that thing.
+  assert.equal(plugin.version, pkg.version, '.claude-plugin/plugin.json is behind package.json');
+  assert.equal(market.metadata.version, pkg.version, 'marketplace metadata.version is behind');
+  assert.equal(market.plugins[0].version, pkg.version, 'marketplace plugins[0].version is behind');
+  assert.equal(cliVersion, pkg.version, 'src/cli.ts VERSION is behind');
 });
 
 /* ---------------------------------------------------------------- psychology */

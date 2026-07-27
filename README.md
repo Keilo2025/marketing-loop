@@ -162,7 +162,30 @@ npx marketing-loop install     # no install needed, or:
 npm i -g marketing-loop
 ```
 
-`install` detects the agents already in your repo and writes their rules files. `--all` writes every one, `--list` shows the ids.
+`install` detects the agents already in your repo and writes their config. `--all` writes every one, `--list` shows the ids.
+
+### Slash commands
+
+Agents that support invokable commands get three, so you can type `/` and pick one instead of remembering the CLI:
+
+| command | what it does |
+| --- | --- |
+| `/marketing-loop` | run the whole loop, agent writes the hard rewrites |
+| `/copy-audit` | report what your copy is costing you, no changes |
+| `/copy-review` | open the approval canvas |
+
+| agent | command directory |
+| --- | --- |
+| Cursor | `.cursor/commands/` |
+| Windsurf | `.windsurf/workflows/` |
+| Cline | `.clinerules/workflows/` |
+| Claude Code | via the plugin |
+
+For agents with no command directory — Codex, Copilot, Gemini CLI, Aider and the rest — say "run the marketing loop" and the rule file below tells them what to do.
+
+### Rules
+
+Rules are background context, not something you invoke. Every agent gets one.
 
 | agent | file |
 | --- | --- |
@@ -187,7 +210,7 @@ Everything is written between `<!-- marketing-loop:start -->` markers, so re-run
 ### As a Claude Code plugin
 
 ```
-/plugin marketplace add christianbuchholz/marketing-loop
+/plugin marketplace add keilo2000/marketing-loop
 /plugin install marketing-loop@marketing-loop
 ```
 
@@ -272,6 +295,9 @@ No. `apply` only ever touches proposals a human marked approved, and `revert` un
 
 **Does my code or data get uploaded?**
 Not by default. Everything is local. With `--llm`, the brief — which includes aggregate figures from `marketing-data/` — goes to that API. Keep raw user-level exports out of the folder.
+
+**I typed `marketing-loop` in Cursor and nothing came up.**
+Two different things share the name. `npx marketing-loop` is the CLI, run from a terminal. `/marketing-loop` — with the slash — is the Cursor command, and it only exists after you run `npx marketing-loop install` in that repo. Rules alone will not show up in any menu; they are passive context.
 
 **It missed strings in my repo.**
 The extractor is conservative on purpose; false positives waste more of your time than false negatives. Add directories to `include`, or move copy into a JSON or Markdown content file where it is unambiguous.

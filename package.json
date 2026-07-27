@@ -1,10 +1,14 @@
 {
   "name": "marketing-loop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A marketing copy loop for vibe-coding agents. Reads your code, works out what the product actually solves, rewrites the copy to sell the outcome instead of the feature, and only ships it after a human approves it on a canvas.",
   "type": "module",
   "license": "MIT",
   "author": "Christian Buchholz",
+  "homepage": "https://github.com/keilo2000/marketing-loop#readme",
+  "bugs": {
+    "url": "https://github.com/keilo2000/marketing-loop/issues"
+  },
   "keywords": [
     "marketing",
     "copywriting",
@@ -33,8 +37,6 @@
     "skills",
     "commands",
     "agents",
-    "assets",
-    "adapters",
     ".claude-plugin",
     "README.md",
     "LICENSE"
@@ -42,9 +44,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
-    "test": "npm run build && node --test tests/",
+    "test": "npm run build && node --test \"tests/**/*.test.js\"",
     "loop": "node dist/cli.js",
-    "prepublishOnly": "npm run build"
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test"
   },
   "engines": {
     "node": ">=18.17"
@@ -55,6 +58,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/christianbuchholz/marketing-loop.git"
+    "url": "git+https://github.com/keilo2000/marketing-loop.git"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
