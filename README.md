@@ -130,6 +130,32 @@ npx marketing-loop review --ui
 
 A local page, `127.0.0.1`, no dependencies. Every proposal shows the current copy, the rewrite, alternatives, the reasoning, the psychology principles and the evidence. The rewrite box is editable — whatever you type wins. `j`/`k` to move, `a` to approve, `r` to reject.
 
+Each proposal card shows:
+
+- **Kind & location** — `subhead` in `messages/en/marketing.json:1005`
+- **Confidence** — 70% means the engine is fairly sure, but a human should verify
+- **Principles applied** — which persuasion techniques this rewrite uses
+- **The change** — side-by-side diff with the reasoning below
+- **Edit box** — rewrite it further if you want; whatever you approve gets applied
+- **Approve/Reject** — only approved copy reaches the code
+
+Example:
+
+```
+NOW                                    PROPOSED — EDIT FREELY
+Generate comprehensive financial      Generate comprehensive financial
+reports, analyze spending patterns,   reports, analyze spending patterns,
+and make data-driven decisions with   and make data-driven decisions with
+powerful insights.                     insights.
+
+Why. Removed "powerful". Words that cannot be disproved are also words that 
+cannot be believed, and readers discount the sentence around them. What is left 
+is shorter and checkable.
+
+Problem it solves. Unfalsifiable adjectives were doing the work that a fact 
+should be doing, so the whole claim read as marketing rather than information.
+```
+
 Prefer not to open a browser?
 
 ```bash
