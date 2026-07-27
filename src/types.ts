@@ -31,6 +31,30 @@ export type Surface = 'landing' | 'app' | 'email' | 'docs' | 'store' | 'legal' |
  */
 export const DEFAULT_SURFACES: Surface[] = ['landing', 'store', 'email', 'app'];
 
+export type SourceRepresentation =
+  | 'plain'
+  | 'html-text'
+  | 'html-attribute-double'
+  | 'html-attribute-single'
+  | 'js-string-double'
+  | 'js-string-single'
+  | 'js-template'
+  | 'json-string'
+  | 'yaml-plain'
+  | 'yaml-double'
+  | 'yaml-single';
+
+export interface SourceSpan {
+  /** Exact bytes between the source delimiters. */
+  raw: string;
+  /** Zero-based start offset, inclusive. */
+  start: number;
+  /** Zero-based end offset, exclusive. */
+  end: number;
+  representation: SourceRepresentation;
+  applicable: boolean;
+}
+
 /** A single string of user-facing copy located in the codebase. */
 export interface CopyItem {
   /** Stable id: short hash of file + text + occurrence index. */
@@ -53,6 +77,22 @@ export interface CopyItem {
   context: string[];
   /** Number of characters — cheap proxy for headline vs body. */
   length: number;
+  /** SHA-256 of the complete source file at scan time. */
+  fileHash?: string;
+  /** Exact source representation used by the safe apply stage. */
+  source?: SourceSpan;
+}
+
+export interface Inventory {
+  schemaVersion: 4;
+  runId: string;
+  inventoryDigest: string;
+  generatedAt: string;
+  repositoryRoot: string;
+  filesScanned: number;
+  filesWithCopy: number;
+  truncated: boolean;
+  items: CopyItem[];
 }
 
 /** A problem the analyser found with an existing string. */
@@ -193,9 +233,46 @@ export interface Proposal {
 }
 
 export interface ProposalSet {
+  schemaVersion?: 4;
+  runId?: string;
+  inventoryDigest?: string;
   generatedAt: string;
   product: string;
   proposals: Proposal[];
+}
+
+export interface AgentProposal {
+  copyId: string;
+  after: string;
+  alternatives: string[];
+  rationale: string;
+  problemSolved: string;
+  principles: string[];
+  evidence: string[];
+  confidence: number;
+}
+
+export interface AgentOutput {
+  schemaVersion: 4;
+  runId: string;
+  inventoryDigest: string;
+  proposals: AgentProposal[];
+}
+
+export interface ProposalDecision {
+  proposalId: string;
+  proposalDigest: string;
+  decision: 'approved' | 'rejected';
+  finalText: string;
+  source: 'canvas' | 'markdown';
+  decidedAt: string;
+}
+
+export interface DecisionSet {
+  schemaVersion: 4;
+  runId: string;
+  inventoryDigest: string;
+  decisions: ProposalDecision[];
 }
 
 export interface ApplyResult {

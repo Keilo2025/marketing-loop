@@ -17,7 +17,8 @@ import { PRINCIPLES } from '../dist/core/psychology.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from '../dist/core/review.js';
 import { linkSiblings, localeOf, siblingGroups } from '../dist/core/siblings.js';
 import { scanRepo } from '../dist/core/scan.js';
-import { defaultConfig } from '../dist/config.js';
+import { defaultConfig, loadConfig } from '../dist/config.js';
+import { hashText, readJsonStrict, writeJson } from '../dist/util/fsx.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, 'fixture');
@@ -612,4 +613,36 @@ test('every principle documents its own abuse case', () => {
   }
   const ids = PRINCIPLES.map((p) => p.id);
   assert.equal(new Set(ids).size, ids.length, 'principle ids are unique');
+});
+
+/* ------------------------------------------------------------ state safety */
+
+test('strict JSON reads explain malformed state instead of silently falling back', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-state-'));
+  const file = path.join(tmp, 'broken.json');
+  fs.writeFileSync(file, '{"runId":');
+
+  assert.throws(() => readJsonStrict(file), /Invalid JSON.*broken\.json/);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('state writes are atomic and content hashes are stable', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-state-'));
+  const file = path.join(tmp, 'state.json');
+
+  writeJson(file, { runId: 'run-1' });
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { runId: 'run-1' });
+  assert.equal(fs.readdirSync(tmp).some((name) => name.includes('.tmp-')), false);
+  assert.equal(hashText('same'), hashText('same'));
+  assert.notEqual(hashText('same'), hashText('different'));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('invalid config fails closed with the field name', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-config-'));
+  fs.writeFileSync(path.join(tmp, 'marketing-loop.config.json'), '{"include":"src"}\n');
+
+  assert.throws(() => loadConfig(tmp), /include.*array/i);
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
