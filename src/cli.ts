@@ -17,6 +17,7 @@ import { behaviorSubjects, loadBehavior } from './core/behavior.js';
 import { renderBrief } from './core/brief.js';
 import { serveCanvas } from './core/canvas.js';
 import { applyGuardrails } from './core/guardrails.js';
+import { importAgentOutput, parseAgentOutput } from './core/ingest.js';
 import { linkSiblings, siblingGroups } from './core/siblings.js';
 import {
   AGENT_TARGETS,
@@ -29,18 +30,20 @@ import { buildProductModel } from './core/product.js';
 import { propose } from './core/propose.js';
 import { renderReport } from './core/report.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from './core/review.js';
-import { scanRepo, summarise } from './core/scan.js';
+import { digestInventoryItems, scanRepo, summarise } from './core/scan.js';
+import { archiveActiveRun, collectDecisionSet } from './core/state.js';
 import { DEFAULT_SURFACES } from './types.js';
 import type {
   BehaviorReport,
   CopyFinding,
   CopyItem,
+  DecisionSet,
+  Inventory,
   LoopConfig,
   ProductModel,
-  Proposal,
   ProposalSet,
 } from './types.js';
-import { exists, readJson, writeJson, writeText } from './util/fsx.js';
+import { exists, readJsonStrict, writeJson, writeText } from './util/fsx.js';
 import { c, log, table } from './util/log.js';
 
 const VERSION = '0.3.0';
@@ -80,6 +83,7 @@ async function main(): Promise<void> {
     case 'scan': return cmdScan(cwd, flags);
     case 'propose': return cmdPropose(cwd, flags);
     case 'brief': return cmdBrief(cwd);
+    case 'import': return cmdImport(cwd);
     case 'review': return cmdReview(cwd, flags);
     case 'apply': return cmdApply(cwd, flags);
     case 'revert': return cmdRevert(cwd);
@@ -129,6 +133,7 @@ function cmdInit(cwd: string, flags: Flags): void {
 /* ------------------------------------------------------------------- scan */
 
 interface ScanArtefacts {
+  inventory: Inventory;
   items: CopyItem[];
   product: ProductModel;
   findings: CopyFinding[];
@@ -140,8 +145,21 @@ interface ScanArtefacts {
 function runScan(cwd: string): ScanArtefacts {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
+  archiveActiveRun(p.out);
 
-  const { items, filesScanned, filesWithCopy } = scanRepo(cwd, config);
+  const scan = scanRepo(cwd, config);
+  const { items } = scan;
+  const inventory: Inventory = {
+    schemaVersion: 4,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: new Date().toISOString(),
+    repositoryRoot: cwd,
+    filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy,
+    truncated: scan.truncated,
+    items,
+  };
   const product = buildProductModel(cwd, config);
   const behavior = loadBehavior(p.data, items);
   const findings = analyse(items, product, config);
@@ -152,12 +170,12 @@ function runScan(cwd: string): ScanArtefacts {
     config.surfaces ?? DEFAULT_SURFACES,
   );
 
-  writeJson(p.inventory, { generatedAt: new Date().toISOString(), filesScanned, filesWithCopy, items });
+  writeJson(p.inventory, inventory);
   writeJson(p.product, product);
   writeJson(p.findings, findings);
   writeJson(p.behavior, behavior);
 
-  return { items, product, findings, behavior, ranked, outOfScope };
+  return { inventory, items, product, findings, behavior, ranked, outOfScope };
 }
 
 /** Tell the human what was deliberately left alone, and how to change that. */
@@ -232,12 +250,31 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
   if (typeof flags.max === 'string') config.maxProposals = Number(flags.max) || config.maxProposals;
 
   log.step('Scanning…');
-  const { items, product, findings, behavior, ranked, outOfScope } = runScan(cwd);
+  const { inventory, items, product, findings, behavior, ranked, outOfScope } = runScan(cwd);
 
   log.step('Proposing…');
   const result = propose({ items, findings, product, behavior, config, ranked });
 
-  let proposals: Proposal[] = result.proposals;
+  const { kept, blocked } = applyGuardrails(result.proposals, config);
+  let set: ProposalSet = {
+    schemaVersion: 4,
+    runId: inventory.runId,
+    inventoryDigest: inventory.inventoryDigest,
+    generatedAt: new Date().toISOString(),
+    product: product.name,
+    proposals: linkSiblings(kept),
+  };
+  const brief = renderBrief({
+    product,
+    items,
+    findings,
+    behavior,
+    config,
+    proposed: result,
+    outDir: config.outDir,
+    runId: inventory.runId,
+    inventoryDigest: inventory.inventoryDigest,
+  });
 
   if (flags.llm) {
     const { provider, model } = detectProvider();
@@ -246,38 +283,44 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
       log.dim('Inside a coding agent you do not need one — the agent reads the brief. See .marketing-loop/brief.md.');
     } else {
       log.step(`Asking ${provider} (${model}) for the open items…`);
-      const brief = renderBrief({ product, items, findings, behavior, config, proposed: result, outDir: config.outDir });
       try {
-        const generated = await generateWithLlm(brief, config, config.maxProposals - proposals.length);
-        proposals = [...proposals, ...generated];
-        log.ok(`${generated.length} proposals from the model`);
+        const generated = await generateWithLlm(brief, config, config.maxProposals - set.proposals.length);
+        const output = {
+          schemaVersion: 4 as const,
+          runId: inventory.runId,
+          inventoryDigest: inventory.inventoryDigest,
+          proposals: generated.map((proposal) => ({
+            copyId: proposal.copyId,
+            after: proposal.after,
+            alternatives: proposal.alternatives,
+            rationale: proposal.rationale,
+            problemSolved: proposal.problemSolved,
+            principles: proposal.principles,
+            evidence: proposal.evidence,
+            confidence: proposal.confidence,
+          })),
+        };
+        const imported = importAgentOutput(set, inventory, output, config, 'llm');
+        set = imported.set;
+        log.ok(`${imported.accepted} proposals from the model`);
+        if (imported.blocked.length || imported.rejected.length) {
+          log.warn(`${imported.blocked.length + imported.rejected.length} model proposals refused`);
+        }
       } catch (error) {
         log.err(String(error instanceof Error ? error.message : error));
       }
     }
   }
 
-  const { kept, blocked } = applyGuardrails(proposals, config);
-
-  // Localised bundles produce the same change dozens of times. Link them so the
-  // review can offer to carry one decision across the set.
-  const linked = linkSiblings(kept);
-
-  const set: ProposalSet = {
-    generatedAt: new Date().toISOString(),
-    product: product.name,
-    proposals: linked,
-  };
   writeJson(p.proposals, set);
-
-  const brief = renderBrief({ product, items, findings, behavior, config, proposed: result, outDir: config.outDir });
   writeText(p.brief, brief);
 
   log.blank();
+  const linked = set.proposals;
   const groups = siblingGroups(linked);
   const localised = groups.filter((g) => g.locales.length > 1);
 
-  log.ok(`${kept.length} proposals ready`);
+  log.ok(`${linked.length} proposals ready`);
   reportOutOfScope(outOfScope, config);
 
   if (groups.length) {
@@ -307,7 +350,8 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
 
   log.blank();
   log.title('If you are inside a coding agent');
-  log.info(`  Read ${c.cyan(path.join(config.outDir, 'brief.md'))} and write your rewrites to ${c.cyan(path.join(config.outDir, 'proposals.json'))}.`);
+  log.info(`  Read ${c.cyan(path.join(config.outDir, 'brief.md'))} and write rewrites to ${c.cyan(path.join(config.outDir, 'agent-output.json'))}.`);
+  log.info(`  Then run ${c.cyan('npx marketing-loop import')} to validate them.`);
   log.blank();
   log.title('If you are a human');
   log.info(`  ${c.cyan('npx marketing-loop review --ui')}   open the approval canvas`);
@@ -317,10 +361,71 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
 function cmdBrief(cwd: string): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const { items, product, findings, behavior, ranked } = runScan(cwd);
+  const { inventory, items, product, findings, behavior, ranked } = runScan(cwd);
   const result = propose({ items, findings, product, behavior, config, ranked });
-  writeText(p.brief, renderBrief({ product, items, findings, behavior, config, proposed: result, outDir: config.outDir }));
+  const { kept } = applyGuardrails(result.proposals, config);
+  const set: ProposalSet = {
+    schemaVersion: 4,
+    runId: inventory.runId,
+    inventoryDigest: inventory.inventoryDigest,
+    generatedAt: new Date().toISOString(),
+    product: product.name,
+    proposals: linkSiblings(kept),
+  };
+  writeJson(p.proposals, set);
+  writeText(p.brief, renderBrief({
+    product,
+    items,
+    findings,
+    behavior,
+    config,
+    proposed: result,
+    outDir: config.outDir,
+    runId: inventory.runId,
+    inventoryDigest: inventory.inventoryDigest,
+  }));
   log.ok(`Brief written to ${path.relative(cwd, p.brief)}`);
+}
+
+function cmdImport(cwd: string): void {
+  const config = loadConfig(cwd);
+  const p = paths(cwd, config);
+  const { set, inventory } = readActiveState(p);
+  if (!exists(p.agentOutput)) {
+    throw new Error(`${path.relative(cwd, p.agentOutput)} not found`);
+  }
+  const output = parseAgentOutput(fs.readFileSync(p.agentOutput, 'utf8'), p.agentOutput);
+  const imported = importAgentOutput(set, inventory, output, config);
+  writeJson(p.proposals, imported.set);
+  log.ok(`${imported.accepted} agent proposal${imported.accepted === 1 ? '' : 's'} imported`);
+  for (const rejected of imported.rejected) log.warn(`${rejected.copyId ?? `entry ${rejected.index}`} — ${rejected.reason}`);
+  for (const blocked of imported.blocked) log.warn(`${blocked.copyId} — ${blocked.reasons.join('; ')}`);
+}
+
+function readActiveState(p: ReturnType<typeof paths>): {
+  set: ProposalSet;
+  inventory: Inventory;
+} {
+  if (!exists(p.proposals)) throw new Error('No proposals found. Run `marketing-loop propose` first.');
+  if (!exists(p.inventory)) throw new Error('No inventory found. Run `marketing-loop scan` first.');
+  const set = readJsonStrict<ProposalSet>(p.proposals);
+  const inventory = readJsonStrict<Inventory>(p.inventory);
+  if (
+    set.schemaVersion !== 4 ||
+    inventory.schemaVersion !== 4 ||
+    !Array.isArray(set.proposals) ||
+    !Array.isArray(inventory.items)
+  ) {
+    throw new Error('State is not schema v4. Run `marketing-loop propose` to regenerate it.');
+  }
+  if (
+    set.runId !== inventory.runId ||
+    set.inventoryDigest !== inventory.inventoryDigest ||
+    digestInventoryItems(inventory.items) !== inventory.inventoryDigest
+  ) {
+    throw new Error('Active proposal and inventory state do not match. Run `marketing-loop propose` again.');
+  }
+  return { set, inventory };
 }
 
 /* ----------------------------------------------------------------- review */
@@ -328,9 +433,19 @@ function cmdBrief(cwd: string): void {
 async function cmdReview(cwd: string, flags: Flags): Promise<void> {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const set = readJson<ProposalSet | null>(p.proposals, null);
+  let { set, inventory } = readActiveState(p);
 
-  if (!set || !set.proposals.length) {
+  if (exists(p.agentOutput)) {
+    const output = parseAgentOutput(fs.readFileSync(p.agentOutput, 'utf8'), p.agentOutput);
+    const imported = importAgentOutput(set, inventory, output, config);
+    set = imported.set;
+    writeJson(p.proposals, set);
+    if (imported.accepted) log.ok(`${imported.accepted} agent proposal${imported.accepted === 1 ? '' : 's'} imported`);
+    for (const rejected of imported.rejected) log.warn(`${rejected.copyId ?? `entry ${rejected.index}`} — ${rejected.reason}`);
+    for (const blocked of imported.blocked) log.warn(`${blocked.copyId} — ${blocked.reasons.join('; ')}`);
+  }
+
+  if (!set.proposals.length) {
     log.err('No proposals found. Run `marketing-loop propose` first.');
     process.exitCode = 1;
     return;
@@ -342,9 +457,12 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const decisions = collectReview(fs.readFileSync(p.review, 'utf8'));
-    const { set: updated, fannedOut } = foldDecisions(set, decisions);
+    const markdown = fs.readFileSync(p.review, 'utf8');
+    const collected = collectReview(markdown);
+    const decisions = collectDecisionSet(set, markdown);
+    const { set: updated, fannedOut } = foldDecisions(set, collected);
     writeJson(p.proposals, updated);
+    writeJson(p.decisions, decisions);
 
     const approved = updated.proposals.filter((x) => x.status === 'approved').length;
     const rejected = updated.proposals.filter((x) => x.status === 'rejected').length;
@@ -372,7 +490,9 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
       cwd,
       config,
       set,
+      inventory,
       proposalsPath: p.proposals,
+      decisionsPath: p.decisions,
       backupDir: p.backups,
       port,
       onApplied: (results) => {
@@ -404,24 +524,23 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
 function cmdApply(cwd: string, flags: Flags): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const set = readJson<ProposalSet | null>(p.proposals, null);
-
-  if (!set) {
-    log.err('No proposals found. Run `marketing-loop propose` first.');
-    process.exitCode = 1;
-    return;
-  }
+  const { set, inventory } = readActiveState(p);
+  let decisions: DecisionSet;
 
   // A review.md left on disk with ticks in it is the human's latest word.
   if (exists(p.review)) {
-    const decisions = collectReview(fs.readFileSync(p.review, 'utf8'));
-    if (decisions.some((d) => d.approved)) {
-      const updated = applyDecisions(set, decisions);
-      set.proposals = updated.proposals;
-    }
+    const markdown = fs.readFileSync(p.review, 'utf8');
+    const collected = collectReview(markdown);
+    decisions = collectDecisionSet(set, markdown);
+    set.proposals = applyDecisions(set, collected).proposals;
+    writeJson(p.decisions, decisions);
+  } else if (exists(p.decisions)) {
+    decisions = readJsonStrict<DecisionSet>(p.decisions);
+  } else {
+    throw new Error('Nothing approved yet. Run `marketing-loop review` first.');
   }
 
-  const approved = set.proposals.filter((x) => x.status === 'approved');
+  const approved = decisions.decisions.filter((decision) => decision.decision === 'approved');
   if (!approved.length) {
     log.warn('Nothing approved yet. Nothing to do.');
     log.dim('A human has to approve before anything is written. That is the point of the tool.');
@@ -430,7 +549,14 @@ function cmdApply(cwd: string, flags: Flags): void {
   }
 
   const dryRun = Boolean(flags['dry-run'] || flags.n);
-  const results = applyProposals(set, { cwd, config, backupDir: p.backups, dryRun });
+  const results = applyProposals(set, {
+    cwd,
+    config,
+    backupDir: p.backups,
+    inventory,
+    decisions,
+    dryRun,
+  });
   const ok = results.filter((r) => r.ok);
   const bad = results.filter((r) => !r.ok);
 
@@ -554,7 +680,7 @@ function cmdUninstall(cwd: string, flags: Flags): void {
 function cmdStatus(cwd: string): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const set = readJson<ProposalSet | null>(p.proposals, null);
+  const set = exists(p.proposals) ? readJsonStrict<ProposalSet>(p.proposals) : null;
 
   log.title('marketing-loop status');
   table([
@@ -611,6 +737,7 @@ ${c.bold('Commands')}
     --llm              also ask an API model (needs ANTHROPIC_API_KEY or OPENAI_API_KEY)
     --max 30           cap the number of proposals
   ${c.cyan('brief')}              regenerate .marketing-loop/brief.md only
+  ${c.cyan('import')}             validate agent-output.json into the active run
   ${c.cyan('review')}             write review.md for approval
     --ui               open the approval canvas in a browser instead
     --port 7788        canvas port
@@ -632,7 +759,7 @@ ${c.bold('Typical first run')}
 ${c.bold('Inside a coding agent')}
 
   Run ${c.cyan('propose')}, then point the agent at ${c.cyan('.marketing-loop/brief.md')}.
-  The agent writes proposals; the human still approves them on the canvas.
+  The agent writes agent-output.json; import validates it, then a human approves it.
 `);
 }
 

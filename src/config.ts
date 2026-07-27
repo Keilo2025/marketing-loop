@@ -162,12 +162,14 @@ export function paths(cwd: string, config: LoopConfig) {
     findings: path.join(out, 'findings.json'),
     behavior: path.join(out, 'behavior.json'),
     brief: path.join(out, 'brief.md'),
+    agentOutput: path.join(out, 'agent-output.json'),
     proposals: path.join(out, 'proposals.json'),
     review: path.join(out, 'review.md'),
     applied: path.join(out, 'applied.json'),
     decisions: path.join(out, 'decisions.json'),
     backups: path.join(out, 'backups'),
     report: path.join(out, 'report.md'),
+    history: path.join(out, 'history'),
     data: path.join(cwd, config.dataDir),
   };
 }

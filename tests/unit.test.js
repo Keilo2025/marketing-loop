@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { analyse, prioritise, prioritiseDetailed } from '../dist/core/analyse.js';
 import { applyProposals } from '../dist/core/apply.js';
 import { loadBehavior, parseDelimited } from '../dist/core/behavior.js';
+import { serveCanvas } from '../dist/core/canvas.js';
 import { extractFromFile, inferSurface, looksLikeCopy } from '../dist/core/extract.js';
 import { applyGuardrails } from '../dist/core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from '../dist/core/ingest.js';
@@ -1031,4 +1033,156 @@ test('a review file from another run is refused instead of silently reused', () 
     () => collectDecisionSet(currentSet, renderReview(oldSet)),
     /different run/i,
   );
+});
+
+test('canvas requires its launch token and writes digest-bound decisions', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-canvas-'));
+  fs.writeFileSync(path.join(tmp, 'page.html'), '<button>Start my audit</button>\n');
+  const state = secureApplyState(tmp, [{
+    file: 'page.html',
+    before: 'Start my audit',
+    after: 'Run my audit',
+  }]);
+  state.set.proposals[0].id = 'deadbeef';
+  const decisionsPath = path.join(tmp, '.marketing-loop', 'decisions.json');
+  const canvas = await serveCanvas({
+    cwd: tmp,
+    config: state.applyConfig,
+    set: state.set,
+    inventory: state.inventory,
+    proposalsPath: path.join(tmp, '.marketing-loop', 'proposals.json'),
+    decisionsPath,
+    backupDir: path.join(tmp, '.marketing-loop', 'backups'),
+    port: 0,
+  });
+
+  try {
+    const launch = new URL(canvas.url);
+    const token = launch.searchParams.get('token');
+    assert.ok(token);
+
+    const bare = await fetch(launch.origin + '/');
+    assert.equal(bare.status, 403);
+
+    const page = await fetch(canvas.url);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-security-policy'), /default-src 'none'/);
+    assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+
+    const unauthenticated = await fetch(launch.origin + '/api/state');
+    assert.equal(unauthenticated.status, 403);
+
+    const wrongType = await fetch(launch.origin + '/api/decide', {
+      method: 'POST',
+      headers: {
+        origin: launch.origin,
+        'x-marketing-loop-token': token,
+      },
+      body: '{}',
+    });
+    assert.equal(wrongType.status, 415);
+
+    const decided = await fetch(launch.origin + '/api/decide', {
+      method: 'POST',
+      headers: {
+        origin: launch.origin,
+        'content-type': 'application/json',
+        'x-marketing-loop-token': token,
+      },
+      body: JSON.stringify({ id: 'deadbeef', status: 'approved', edited: 'Run my audit' }),
+    });
+    assert.equal(decided.status, 200);
+
+    const ledger = readJsonStrict(decisionsPath);
+    assert.equal(ledger.runId, state.set.runId);
+    assert.equal(ledger.decisions[0].proposalId, 'deadbeef');
+    assert.equal(
+      ledger.decisions[0].proposalDigest,
+      proposalDigest(state.set.proposals[0], 'Run my audit'),
+    );
+  } finally {
+    canvas.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('schema v4 CLI completes scan, agent import, human review, and safe apply', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-e2e-'));
+  fs.cpSync(FIXTURE, tmp, { recursive: true });
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const run = (...args) => spawnSync(
+    process.execPath,
+    [cli, ...args, '--cwd', tmp],
+    { encoding: 'utf8' },
+  );
+
+  try {
+    let result = run('propose');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const out = path.join(tmp, '.marketing-loop');
+    const inventory = readJsonStrict(path.join(out, 'inventory.json'));
+    let set = readJsonStrict(path.join(out, 'proposals.json'));
+    assert.equal(inventory.schemaVersion, 4);
+    assert.equal(set.runId, inventory.runId);
+    assert.equal(set.inventoryDigest, inventory.inventoryDigest);
+
+    const item = inventory.items.find((candidate) => candidate.text === 'No deployments found.');
+    assert.ok(item);
+    writeJson(path.join(out, 'agent-output.json'), {
+      schemaVersion: 4,
+      runId: inventory.runId,
+      inventoryDigest: inventory.inventoryDigest,
+      proposals: [{
+        copyId: item.id,
+        after: 'Connect your first deployment to see it here.',
+        alternatives: ['Connect a deployment to get started.'],
+        rationale: 'Turns a dead end into a concrete recovery action.',
+        problemSolved: 'The empty state did not explain what to do next.',
+        principles: ['goal-gradient'],
+        evidence: ['The deployment view already exists in this route.'],
+        confidence: 0.8,
+      }],
+    });
+
+    result = run('import');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    set = readJsonStrict(path.join(out, 'proposals.json'));
+    const imported = set.proposals.find((proposal) =>
+      proposal.copyId === item.id && proposal.author === 'agent'
+    );
+    assert.ok(imported);
+    assert.equal(imported.status, 'pending');
+
+    result = run('review');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const reviewPath = path.join(out, 'review.md');
+    let review = fs.readFileSync(reviewPath, 'utf8');
+    assert.match(review, new RegExp(`marketing-loop-run:${inventory.runId}`));
+    review = review.replace(
+      `<!-- marketing-loop:${imported.id} -->\n- [ ] APPROVE`,
+      `<!-- marketing-loop:${imported.id} -->\n- [x] APPROVE`,
+    );
+    fs.writeFileSync(reviewPath, review);
+
+    result = run('review', '--collect');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const ledger = readJsonStrict(path.join(out, 'decisions.json'));
+    assert.equal(
+      ledger.decisions.find((decision) => decision.proposalId === imported.id).decision,
+      'approved',
+    );
+
+    const source = path.join(tmp, item.file);
+    const before = fs.readFileSync(source, 'utf8');
+    result = run('apply', '--dry-run');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(fs.readFileSync(source, 'utf8'), before);
+
+    result = run('apply');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(fs.readFileSync(source, 'utf8'), /Connect your first deployment to see it here\./);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

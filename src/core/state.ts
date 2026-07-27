@@ -1,11 +1,47 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type {
   DecisionSet,
   Proposal,
   ProposalDecision,
   ProposalSet,
 } from '../types.js';
-import { hashText } from '../util/fsx.js';
+import { exists, hashText, readJsonStrict, writeText } from '../util/fsx.js';
 import { collectReview, type Decision } from './review.js';
+
+const RUN_FILES = [
+  'inventory.json',
+  'product.json',
+  'findings.json',
+  'behavior.json',
+  'brief.md',
+  'agent-output.json',
+  'proposals.json',
+  'review.md',
+  'decisions.json',
+  'applied.json',
+  'report.md',
+];
+
+/** Archive the active run before a new scan replaces its state files. */
+export function archiveActiveRun(outDir: string): string | null {
+  const inventoryPath = path.join(outDir, 'inventory.json');
+  if (!exists(inventoryPath)) return null;
+  const inventory = readJsonStrict<{ runId?: unknown }>(inventoryPath);
+  const runId = inventory.runId === undefined
+    ? `legacy-${Date.now()}`
+    : inventory.runId;
+  if (typeof runId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(runId)) {
+    throw new Error('cannot archive active run: inventory has an unsafe runId');
+  }
+  const destination = path.join(outDir, 'history', runId);
+  for (const name of RUN_FILES) {
+    const source = path.join(outDir, name);
+    if (!exists(source)) continue;
+    writeText(path.join(destination, name), fs.readFileSync(source, 'utf8'));
+  }
+  return destination;
+}
 
 /**
  * Hash everything the reviewer was asked to approve, plus the exact final

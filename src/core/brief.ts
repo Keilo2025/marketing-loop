@@ -26,6 +26,8 @@ export interface BriefInput {
   config: LoopConfig;
   proposed: ProposeOutput;
   outDir: string;
+  runId: string;
+  inventoryDigest: string;
 }
 
 export function renderBrief(input: BriefInput): string {
@@ -46,7 +48,7 @@ export function renderBrief(input: BriefInput): string {
   s.push('');
   s.push(
     'Rewrite the copy listed under **Open items** so it sells the outcome rather than the feature, then write your proposals to `' +
-      relOut(input.outDir, 'proposals.json') +
+      relOut(input.outDir, 'agent-output.json') +
       '` using the schema at the bottom of this file.',
   );
   s.push('');
@@ -176,7 +178,7 @@ export function renderBrief(input: BriefInput): string {
   if (proposed.proposals.length) {
     s.push('## Already proposed by the engine');
     s.push('');
-    s.push('These are in `proposals.json` already. Leave them alone unless you can clearly do better — if you can, reuse the same `copyId` and the human will see both.');
+    s.push('These are already in the canonical proposal set. Leave them alone unless you can clearly do better — if you can, reuse the same `copyId` and your imported rewrite will replace the engine version for review.');
     s.push('');
     s.push('| copyId | before | after | principles |');
     s.push('| --- | --- | --- | --- |');
@@ -204,22 +206,18 @@ export function renderBrief(input: BriefInput): string {
   /* ------------------------------------------------------------- schema */
   s.push('## Output schema');
   s.push('');
-  s.push('Write to `' + relOut(input.outDir, 'proposals.json') + '`. **Merge with the existing file** — do not overwrite the engine\'s proposals.');
+  s.push('Write only to `' + relOut(input.outDir, 'agent-output.json') + '`. Do not edit `inventory.json`, `proposals.json`, `decisions.json`, or source files.');
   s.push('');
   s.push('```json');
   s.push(
     JSON.stringify(
       {
-        generatedAt: '<ISO timestamp>',
-        product: product.name,
+        schemaVersion: 4,
+        runId: input.runId,
+        inventoryDigest: input.inventoryDigest,
         proposals: [
           {
-            id: '<any unique string>',
             copyId: '<the id from Open items>',
-            file: '<path exactly as shown>',
-            line: 0,
-            kind: 'cta',
-            before: '<must match the source text character for character>',
             after: '<your rewrite>',
             alternatives: ['<a second option the human can pick>'],
             rationale: '<why this wins, for a human, naming the mechanism>',
@@ -227,8 +225,6 @@ export function renderBrief(input: BriefInput): string {
             principles: ['outcome-framing', 'specificity'],
             evidence: ['<code fact, data point, or NEEDS-FACT: question>'],
             confidence: 0.8,
-            status: 'pending',
-            author: 'agent',
           },
         ],
       },
@@ -238,11 +234,12 @@ export function renderBrief(input: BriefInput): string {
   );
   s.push('```');
   s.push('');
-  s.push('`before` must match the source exactly or apply will refuse the change. Copy it from the Open items block above rather than retyping it.');
+  s.push('Only `copyId` identifies the target. File paths, source text, status, ids, and authors are ignored and reconstructed from the active inventory during import.');
   s.push('');
   s.push('## Then');
   s.push('');
   s.push('```bash');
+  s.push('npx marketing-loop import        # validates agent-output.json into proposals.json');
   s.push('npx marketing-loop review        # writes review.md for a human to tick');
   s.push('npx marketing-loop review --ui   # or open the approval canvas in a browser');
   s.push('npx marketing-loop apply         # applies only what a human approved');

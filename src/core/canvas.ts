@@ -11,30 +11,76 @@
  */
 
 import http from 'node:http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import type { ApplyResult, LoopConfig, ProposalSet } from '../types.js';
+import type {
+  ApplyResult,
+  DecisionSet,
+  Inventory,
+  LoopConfig,
+  ProposalSet,
+} from '../types.js';
 import { writeJson } from '../util/fsx.js';
 import { applyProposals } from './apply.js';
 import { PRINCIPLES } from './psychology.js';
+import { decisionSetFrom } from './state.js';
 
 export interface CanvasOptions {
   cwd: string;
   config: LoopConfig;
   set: ProposalSet;
+  inventory: Inventory;
   proposalsPath: string;
+  decisionsPath: string;
   backupDir: string;
   port: number;
   onApplied?: (results: ApplyResult[]) => void;
 }
 
 export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: () => void }> {
-  const { set, proposalsPath } = opts;
+  const { set, proposalsPath, decisionsPath } = opts;
+  assertSafeCanvasState(set, opts.inventory);
+  const token = randomBytes(32).toString('hex');
+
+  const currentLedger = (): DecisionSet => decisionSetFrom(
+    set,
+    set.proposals
+      .filter((proposal) => proposal.status === 'approved' || proposal.status === 'rejected')
+      .map((proposal) => ({
+        proposalId: proposal.id,
+        approved: proposal.status === 'approved',
+        finalText: proposal.edited ?? proposal.after,
+        explicit: true,
+      })),
+    'canvas',
+  );
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 
     if (req.method === 'GET' && url.pathname === '/') {
+      if (!sameToken(url.searchParams.get('token'), token)) {
+        return send(res, 403, 'text/plain; charset=utf-8', 'forbidden');
+      }
       return send(res, 200, 'text/html; charset=utf-8', PAGE);
+    }
+
+    if (url.pathname.startsWith('/api/')) {
+      const supplied = req.headers['x-marketing-loop-token'];
+      if (Array.isArray(supplied) || !sameToken(supplied, token)) {
+        return json(res, 403, { error: 'forbidden' });
+      }
+      if (req.method === 'POST') {
+        const address = server.address() as AddressInfo | null;
+        const expectedOrigin = address ? `http://127.0.0.1:${address.port}` : '';
+        if (req.headers.origin !== expectedOrigin) {
+          return json(res, 403, { error: 'invalid origin' });
+        }
+        const contentType = req.headers['content-type'] ?? '';
+        if (!contentType.toLowerCase().startsWith('application/json')) {
+          return json(res, 415, { error: 'content-type must be application/json' });
+        }
+      }
     }
 
     if (req.method === 'GET' && url.pathname === '/api/state') {
@@ -47,17 +93,20 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
     }
 
     if (req.method === 'POST' && url.pathname === '/api/decide') {
-      return body(req, (data) => {
+      return body(req, res, (data) => {
         const { id, status, edited } = data as { id: string; status: string; edited?: string };
         const proposal = set.proposals.find((p) => p.id === id);
         if (!proposal) return json(res, 404, { error: 'unknown proposal' });
-        if (status === 'approved' || status === 'rejected' || status === 'pending') {
-          proposal.status = status;
+        if (status !== 'approved' && status !== 'rejected' && status !== 'pending') {
+          return json(res, 400, { error: 'invalid decision status' });
         }
+        proposal.status = status;
         if (typeof edited === 'string') {
+          if (edited.length > 1000) return json(res, 400, { error: 'edited text is too long' });
           proposal.edited = edited.trim() && edited.trim() !== proposal.after ? edited.trim() : undefined;
         }
         writeJson(proposalsPath, set);
+        writeJson(decisionsPath, currentLedger());
         return json(res, 200, { ok: true, proposal });
       });
     }
@@ -69,7 +118,7 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
      * clicked once.
      */
     if (req.method === 'POST' && url.pathname === '/api/decide-group') {
-      return body(req, (data) => {
+      return body(req, res, (data) => {
         const { id, status, edited } = data as { id: string; status: string; edited?: string };
         const lead = set.proposals.find((p) => p.id === id);
         if (!lead) return json(res, 404, { error: 'unknown proposal' });
@@ -77,6 +126,9 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
           return json(res, 400, { error: 'group decisions must be approve or reject' });
         }
 
+        if (typeof edited === 'string' && edited.length > 1000) {
+          return json(res, 400, { error: 'edited text is too long' });
+        }
         const text = typeof edited === 'string' && edited.trim() ? edited.trim() : undefined;
         const changed: string[] = [];
 
@@ -90,17 +142,22 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
         }
 
         writeJson(proposalsPath, set);
+        writeJson(decisionsPath, currentLedger());
         return json(res, 200, { ok: true, changed, proposals: set.proposals });
       });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/apply') {
-      return body(req, (data) => {
+      return body(req, res, (data) => {
         const { dryRun } = data as { dryRun?: boolean };
+        const decisions = currentLedger();
+        writeJson(decisionsPath, decisions);
         const results = applyProposals(set, {
           cwd: opts.cwd,
           config: opts.config,
           backupDir: opts.backupDir,
+          inventory: opts.inventory,
+          decisions,
           dryRun: Boolean(dryRun),
         });
         writeJson(proposalsPath, set);
@@ -117,7 +174,7 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
     server.listen(opts.port, '127.0.0.1', () => {
       const { port } = server.address() as AddressInfo;
       resolve({
-        url: `http://127.0.0.1:${port}`,
+        url: `http://127.0.0.1:${port}/?token=${token}`,
         close: () => server.close(),
       });
     });
@@ -125,7 +182,16 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
 }
 
 function send(res: http.ServerResponse, code: number, type: string, payload: string): void {
-  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
+  res.writeHead(code, {
+    'content-type': type,
+    'cache-control': 'no-store',
+    'content-security-policy':
+      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    'cross-origin-resource-policy': 'same-origin',
+    'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+  });
   res.end(payload);
 }
 
@@ -133,19 +199,60 @@ function json(res: http.ServerResponse, code: number, payload: unknown): void {
   send(res, code, 'application/json', JSON.stringify(payload));
 }
 
-function body(req: http.IncomingMessage, cb: (data: unknown) => void): void {
+function body(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  cb: (data: unknown) => void,
+): void {
   let raw = '';
+  let ended = false;
   req.on('data', (chunk) => {
+    if (ended) return;
     raw += chunk;
-    if (raw.length > 2_000_000) req.destroy();
+    if (raw.length > 1_000_000) {
+      ended = true;
+      json(res, 413, { error: 'request body is too large' });
+      req.resume();
+    }
   });
   req.on('end', () => {
+    if (ended) return;
     try {
       cb(raw ? JSON.parse(raw) : {});
     } catch {
-      cb({});
+      json(res, 400, { error: 'invalid JSON request body' });
     }
   });
+  req.on('error', () => {
+    if (!ended) {
+      ended = true;
+      if (!res.headersSent) json(res, 400, { error: 'request body could not be read' });
+    }
+  });
+}
+
+function sameToken(actual: string | undefined | null, expected: string): boolean {
+  if (typeof actual !== 'string' || actual.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
+}
+
+function assertSafeCanvasState(set: ProposalSet, inventory: Inventory): void {
+  if (
+    set.schemaVersion !== 4 ||
+    !set.runId ||
+    !set.inventoryDigest ||
+    set.runId !== inventory.runId ||
+    set.inventoryDigest !== inventory.inventoryDigest
+  ) {
+    throw new Error('canvas requires a schema v4 proposal set and matching inventory');
+  }
+  const seen = new Set<string>();
+  for (const proposal of set.proposals) {
+    if (!/^[a-f0-9]{8}$/.test(proposal.id) || seen.has(proposal.id)) {
+      throw new Error(`unsafe or duplicate proposal id: ${proposal.id}`);
+    }
+    seen.add(proposal.id);
+  }
 }
 
 /* ------------------------------------------------------------------- page */
@@ -286,14 +393,28 @@ const PAGE = `<!doctype html>
 </footer>
 <script>
 var state = { proposals: [], cursor: 0 };
+var launchToken = new URLSearchParams(window.location.search).get('token') || '';
 
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function api(path, options) {
+  options = options || {};
+  options.headers = Object.assign({}, options.headers || {}, {
+    'x-marketing-loop-token': launchToken
+  });
+  return fetch(path, options).then(function (response) {
+    return response.json().then(function (data) {
+      if (!response.ok) throw new Error(data.error || ('Request failed: ' + response.status));
+      return data;
+    });
+  });
+}
+
 function load() {
-  fetch('/api/state').then(function (r) { return r.json(); }).then(function (data) {
+  api('/api/state').then(function (data) {
     state.proposals = data.proposals;
     document.getElementById('product').textContent =
       data.product + ' · ' + data.proposals.length + ' proposals';
@@ -367,11 +488,11 @@ function pendingSiblings(p) {
 }
 
 function decide(id, status, edited) {
-  return fetch('/api/decide', {
+  return api('/api/decide', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id: id, status: status, edited: edited })
-  }).then(function (r) { return r.json(); }).then(function (data) {
+  }).then(function (data) {
     if (!data.proposal) return;
     var idx = state.proposals.findIndex(function (p) { return p.id === id; });
     if (idx >= 0) state.proposals[idx] = data.proposal;
@@ -431,11 +552,11 @@ function offerFanout(p) {
 
 function fanout(id, status) {
   var textarea = document.querySelector('.final[data-id="' + id + '"]');
-  return fetch('/api/decide-group', {
+  return api('/api/decide-group', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id: id, status: status, edited: textarea ? textarea.value : undefined })
-  }).then(function (r) { return r.json(); }).then(function (data) {
+  }).then(function (data) {
     if (!data.proposals) return;
     state.proposals = data.proposals;
     var box = document.getElementById('fan-' + id);
@@ -487,11 +608,11 @@ function counts() {
 function run(dryRun) {
   var log = document.getElementById('log');
   log.textContent = dryRun ? 'Dry run…' : 'Applying…';
-  fetch('/api/apply', {
+  api('/api/apply', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ dryRun: !!dryRun })
-  }).then(function (r) { return r.json(); }).then(function (data) {
+  }).then(function (data) {
     var ok = data.results.filter(function (r) { return r.ok; }).length;
     var bad = data.results.filter(function (r) { return !r.ok; });
     log.textContent = (dryRun ? 'Dry run: ' : 'Applied ') + ok + ' change' + (ok === 1 ? '' : 's') +
