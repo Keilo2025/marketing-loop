@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.local
+
+# Loop working directory — regenerated on every run.
+# Keep decisions.json and config if you want them in version control.
+.marketing-loop/backups/
+.marketing-loop/cache/

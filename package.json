@@ -1,0 +1,60 @@
+{
+  "name": "marketing-loop",
+  "version": "0.1.0",
+  "description": "A marketing copy loop for vibe-coding agents. Reads your code, works out what the product actually solves, rewrites the copy to sell the outcome instead of the feature, and only ships it after a human approves it on a canvas.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Christian Buchholz",
+  "keywords": [
+    "marketing",
+    "copywriting",
+    "conversion",
+    "cro",
+    "landing-page",
+    "cta",
+    "claude-code",
+    "cursor",
+    "codex",
+    "agents",
+    "ai-agent",
+    "plugin",
+    "vibe-coding"
+  ],
+  "bin": {
+    "marketing-loop": "dist/cli.js",
+    "mloop": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./psychology": "./dist/core/psychology.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "commands",
+    "agents",
+    "assets",
+    "adapters",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "test": "npm run build && node --test tests/",
+    "loop": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.7.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/christianbuchholz/marketing-loop.git"
+  }
+}
