@@ -11,7 +11,12 @@
  */
 
 import path from 'node:path';
-import type { CopyItem, CopyKind, Surface } from '../types.js';
+import type {
+  CopyItem,
+  CopyKind,
+  SourceRepresentation,
+  Surface,
+} from '../types.js';
 import { shortHash } from '../util/fsx.js';
 
 export const SCANNABLE = [
@@ -53,14 +58,16 @@ export function extractFromFile(
   const seen = new Map<string, number>();
 
   const push = (
-    text: string,
+    raw: string,
     index: number,
     kind: CopyKind,
     context: string[],
     element?: string,
     attr?: string,
+    representation: SourceRepresentation = 'plain',
+    displayText?: string,
   ) => {
-    const clean = normalise(text);
+    const clean = normalise(displayText ?? raw);
     if (!looksLikeCopy(clean, attr)) return;
     const occurrence = seen.get(clean) ?? 0;
     seen.set(clean, occurrence + 1);
@@ -75,6 +82,13 @@ export function extractFromFile(
       attr,
       context,
       length: clean.length,
+      source: {
+        raw,
+        start: index,
+        end: index + raw.length,
+        representation,
+        applicable: true,
+      },
     });
   };
 
@@ -94,12 +108,14 @@ export function extractFromFile(
 }
 
 type Push = (
-  text: string,
+  raw: string,
   index: number,
   kind: CopyKind,
   context: string[],
   element?: string,
   attr?: string,
+  representation?: SourceRepresentation,
+  displayText?: string,
 ) => void;
 
 /* ------------------------------------------------------------------ markup */
@@ -115,7 +131,7 @@ function extractMarkup(content: string, push: Push): void {
     const [, tag = '', attrs = '', text = ''] = m;
     if (/^(script|style|svg|path|code|pre)$/i.test(tag)) continue;
     const index = m.index + m[0].length - text.length;
-    push(text, index, kindForTag(tag, attrs, text), tagContext(tag, attrs), tag);
+    push(text, index, kindForTag(tag, attrs, text), tagContext(tag, attrs), tag, undefined, 'html-text');
   }
 
   // 2. Attribute values that are copy.
@@ -125,13 +141,33 @@ function extractMarkup(content: string, push: Push): void {
     const value = m[2] ?? m[3] ?? '';
     if (CODE_ATTRS.has(name)) continue;
     if (!COPY_ATTRS.has(name) && !COPY_ATTRS.has(name.replace(/-/g, ''))) continue;
-    push(value, m.index, kindForAttr(name), [`attr:${name}`], undefined, name);
+    const valueIndex = m.index + m[0].indexOf(value);
+    push(
+      value,
+      valueIndex,
+      kindForAttr(name),
+      [`attr:${name}`],
+      undefined,
+      name,
+      m[2] !== undefined ? 'html-attribute-double' : 'html-attribute-single',
+    );
   }
 
   // 3. <meta name="description"> and Open Graph — pure marketing surface.
   const meta = /<meta\s+[^>]*?(?:name|property)\s*=\s*["'](description|og:title|og:description|twitter:title|twitter:description)["'][^>]*?content\s*=\s*["']([^"']{2,300})["']/gi;
   while ((m = meta.exec(content))) {
-    push(m[2] ?? '', m.index, 'meta', [`meta:${m[1]}`], 'meta', 'content');
+    const value = m[2] ?? '';
+    const valueIndex = m.index + m[0].lastIndexOf(value);
+    const quote = content[valueIndex - 1];
+    push(
+      value,
+      valueIndex,
+      'meta',
+      [`meta:${m[1]}`],
+      'meta',
+      'content',
+      quote === "'" ? 'html-attribute-single' : 'html-attribute-double',
+    );
   }
 }
 
@@ -147,7 +183,9 @@ function extractIdentifiers(content: string, push: Push): void {
     if (end === -1 || end - start > 300) continue;
     const value = content.slice(start, end);
     const ident = (m[1] ?? '').toLowerCase();
-    push(value, start, kindForIdent(ident), [`ident:${m[1]}`]);
+    const representation: SourceRepresentation =
+      quote === "'" ? 'js-string-single' : quote === '`' ? 'js-template' : 'js-string-double';
+    push(value, start, kindForIdent(ident), [`ident:${m[1]}`], undefined, undefined, representation);
   }
 }
 
@@ -176,18 +214,22 @@ function extractMarkdown(content: string, push: Push): void {
     const heading = /^(#{1,6})\s+(.{2,200})$/.exec(line);
     if (heading) {
       const level = (heading[1] ?? '#').length;
-      push(heading[2] ?? '', lineStart, level === 1 ? 'headline' : 'subhead', [`h${level}`]);
+      const raw = heading[2] ?? '';
+      push(raw, lineStart + line.indexOf(raw), level === 1 ? 'headline' : 'subhead', [`h${level}`]);
       continue;
     }
 
     const cta = /^\s*\[([^\]]{2,80})\]\(([^)]+)\)\s*$/.exec(line);
     if (cta) {
-      push(cta[1] ?? '', lineStart, 'cta', ['markdown-link']);
+      const raw = cta[1] ?? '';
+      push(raw, lineStart + line.indexOf(raw), 'cta', ['markdown-link']);
       continue;
     }
 
     const body = line.trim();
-    if (body.length > 20 && !/^[|>\-*+\d]/.test(body)) push(body, lineStart, 'body', ['paragraph']);
+    if (body.length > 20 && !/^[|>\-*+\d]/.test(body)) {
+      push(body, lineStart + line.indexOf(body), 'body', ['paragraph']);
+    }
   }
 }
 
@@ -199,9 +241,19 @@ function extractJson(content: string, push: Push): void {
   let m: RegExpExecArray | null;
   while ((m = pair.exec(content))) {
     const key = m[1] ?? '';
-    const value = (m[2] ?? '').replace(/\\"/g, '"');
+    const raw = m[2] ?? '';
+    const value = decodeJsonString(raw);
     if (/^(\$schema|version|type|id|url|src|path|href|icon|color|class|name)$/i.test(key)) continue;
-    push(value, m.index, kindForIdent(key.toLowerCase()), [`key:${key}`]);
+    push(
+      raw,
+      m.index + m[0].lastIndexOf(raw),
+      kindForIdent(key.toLowerCase()),
+      [`key:${key}`],
+      undefined,
+      undefined,
+      'json-string',
+      value,
+    );
   }
 }
 
@@ -211,7 +263,12 @@ function extractYaml(content: string, push: Push): void {
   while ((m = pair.exec(content))) {
     const key = (m[1] ?? '').toLowerCase();
     if (/^(version|id|url|src|path|image|icon|color|type|name|uses|run|on|with)$/.test(key)) continue;
-    push(m[2] ?? '', m.index, kindForIdent(key), [`key:${key}`]);
+    const raw = m[2] ?? '';
+    const rawIndex = m.index + m[0].indexOf(raw);
+    const quote = content[rawIndex - 1];
+    const representation: SourceRepresentation =
+      quote === '"' ? 'yaml-double' : quote === "'" ? 'yaml-single' : 'yaml-plain';
+    push(raw, rawIndex, kindForIdent(key), [`key:${key}`], undefined, undefined, representation);
   }
 }
 
@@ -262,6 +319,14 @@ function normalise(text: string): string {
     .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function decodeJsonString(raw: string): string {
+  try {
+    return JSON.parse(`"${raw}"`) as string;
+  } catch {
+    return raw.replace(/\\"/g, '"');
+  }
 }
 
 function lineOf(content: string, index: number): number {

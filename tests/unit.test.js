@@ -18,7 +18,7 @@ import { applyDecisions, collectReview, foldDecisions, renderReview } from '../d
 import { linkSiblings, localeOf, siblingGroups } from '../dist/core/siblings.js';
 import { scanRepo } from '../dist/core/scan.js';
 import { defaultConfig, loadConfig } from '../dist/config.js';
-import { hashText, readJsonStrict, writeJson } from '../dist/util/fsx.js';
+import { hashText, readJsonStrict, walkDetailed, writeJson } from '../dist/util/fsx.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, 'fixture');
@@ -644,5 +644,51 @@ test('invalid config fails closed with the field name', () => {
   fs.writeFileSync(path.join(tmp, 'marketing-loop.config.json'), '{"include":"src"}\n');
 
   assert.throws(() => loadConfig(tmp), /include.*array/i);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('inventory preserves normalized text and exact multiline source', () => {
+  const source = '<h1>Hello\n    world &amp; friends</h1>';
+  const [item] = extractFromFile('page.html', source);
+
+  assert.equal(item.text, 'Hello world & friends');
+  assert.equal(item.source.raw, 'Hello\n    world &amp; friends');
+  assert.equal(source.slice(item.source.start, item.source.end), item.source.raw);
+  assert.equal(item.source.representation, 'html-text');
+});
+
+test('scan honors include roots and records file hashes', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-scan-'));
+  fs.mkdirSync(path.join(tmp, 'src'));
+  fs.mkdirSync(path.join(tmp, 'elsewhere'));
+  fs.writeFileSync(path.join(tmp, 'src', 'a.html'), '<h1>Inside source copy</h1>');
+  fs.writeFileSync(path.join(tmp, 'elsewhere', 'b.html'), '<h1>Outside requested scope</h1>');
+
+  const result = scanRepo(
+    tmp,
+    { ...defaultConfig, include: ['src'], exclude: [], protectedFiles: [] },
+    'run-test',
+  );
+
+  assert.deepEqual(result.items.map((item) => item.file), ['src/a.html']);
+  assert.equal(
+    result.items[0].fileHash,
+    hashText(fs.readFileSync(path.join(tmp, 'src', 'a.html'), 'utf8')),
+  );
+  assert.equal(result.runId, 'run-test');
+  assert.equal(typeof result.inventoryDigest, 'string');
+  assert.equal(result.inventoryDigest.length, 64);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('walk reports truncation instead of silently presenting a partial scan', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-walk-'));
+  fs.writeFileSync(path.join(tmp, 'a.html'), '<h1>First page</h1>');
+  fs.writeFileSync(path.join(tmp, 'b.html'), '<h1>Second page</h1>');
+
+  const result = walkDetailed(tmp, { extensions: ['.html'], maxFiles: 1 });
+
+  assert.equal(result.files.length, 1);
+  assert.equal(result.truncated, true);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
