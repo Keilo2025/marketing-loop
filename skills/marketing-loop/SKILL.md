@@ -16,6 +16,7 @@ This skill closes that gap by reading the code before writing a word, so the cop
 ```bash
 npx marketing-loop scan      # find every user-facing string, diagnose each one
 npx marketing-loop propose   # engine rewrites what it can prove; writes brief.md for you
+npx marketing-loop import    # validate your agent-output.json into the active run
 npx marketing-loop review    # human approves — markdown, or --ui for the canvas
 npx marketing-loop apply     # writes only what the human approved
 ```
@@ -37,6 +38,7 @@ This writes four things into `.marketing-loop/`:
 | `product.json` | what the codebase says this product does — routes, capabilities, integrations, pricing tiers |
 | `behavior.json` | whatever was in `marketing-data/` — funnels, drop-offs, CTR, human notes |
 | `proposals.json` | rewrites the deterministic engine could make without inventing anything |
+| `agent-output.json` | the only state file you may write; the CLI treats it as untrusted |
 | `brief.md` | **read this** — the full brief, the open items, and your output schema |
 
 ### 2. Read `.marketing-loop/brief.md`
@@ -51,9 +53,9 @@ Copy written from a feature list is guesswork. Copy written from the implementat
 
 ### 4. Write proposals
 
-Append to `.marketing-loop/proposals.json` — **merge, do not overwrite**. Schema is at the bottom of the brief. Every proposal needs:
+Write `.marketing-loop/agent-output.json` using the complete schema and exact `runId` and `inventoryDigest` at the bottom of the brief. Each proposal needs:
 
-- `before` matching the source **character for character** (copy it from the brief, do not retype)
+- `copyId` from the open item; this is the only target identifier you provide
 - `after` — your rewrite
 - `alternatives` — at least one genuine second option, because the human should get a real choice
 - `rationale` — why this wins, written for a sceptical founder, naming the mechanism and why it applies to this string
@@ -61,10 +63,20 @@ Append to `.marketing-loop/proposals.json` — **merge, do not overwrite**. Sche
 - `principles` — ids from the persuasion library
 - `evidence` — the code fact or data point behind it, or `NEEDS-FACT: <question>` where you need the human to supply something
 
+Do not add `id`, `file`, `line`, `kind`, `before`, `status`, or `author`. The CLI reconstructs those fields from the active inventory so model output cannot redirect or approve its own change.
+
+Validate the file:
+
+```bash
+npx marketing-loop import
+```
+
+Fix every rejected or blocked entry before handing off.
+
 ### 5. Hand back to the human
 
 ```
-I've written N proposals to .marketing-loop/proposals.json.
+I've written and imported N proposals from .marketing-loop/agent-output.json.
 Run `npx marketing-loop review --ui` to approve them.
 ```
 
@@ -95,7 +107,7 @@ Do not run `apply` unless they explicitly ask you to in this session. The approv
 
 **Copy only.** No component restructuring, no new props, no logic changes, no styling. If the copy fix genuinely requires a structural change, say so in the rationale and let the human decide.
 
-**Never edit source files directly.** Everything goes through `proposals.json` and the canvas.
+**Never edit source files, `inventory.json`, `proposals.json`, or `decisions.json` directly.** Your only write target is `agent-output.json`; then `marketing-loop import` validates it before the canvas.
 
 ## When there is no behavioural data
 

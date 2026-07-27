@@ -39,11 +39,19 @@ For each open item:
 2. Write the rewrite from that detail, not from the feature name.
 3. Give at least one genuine alternative, so the human gets a real choice rather than a rubber stamp.
 
-Append to `.marketing-loop/proposals.json`, merging with what is already there. `before` must match the source character for character — copy it from the brief.
+Write only `.marketing-loop/agent-output.json` using the exact schema, `runId`, `inventoryDigest`, and open-item `copyId` values in the brief. Do not write paths, source text, ids, authors, or statuses; the importer reconstructs them from the active inventory.
 
 **Never invent a fact.** Where a rewrite wants a number you do not have, write it without and add `NEEDS-FACT: <the question>` to that proposal's evidence array.
 
 ## 5. Hand over
+
+First validate the untrusted output:
+
+```bash
+npx marketing-loop@latest import
+```
+
+Resolve every refused entry. Then summarise for the user:
 
 Summarise for the user:
 

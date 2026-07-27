@@ -23,6 +23,7 @@ import { scanRepo } from '../dist/core/scan.js';
 import {
   collectDecisionSet,
   proposalDigest,
+  rotateActiveRun,
   validateDecisionSet,
 } from '../dist/core/state.js';
 import { defaultConfig, loadConfig } from '../dist/config.js';
@@ -224,9 +225,7 @@ test('guardrails block dark patterns and flag unsourced numbers', () => {
   const blockedIds = blocked.map((b) => b.proposal.id);
   assert.ok(blockedIds.includes('urgency'));
   assert.ok(blockedIds.includes('shame'));
-
-  const numbers = kept.find((p) => p.id === 'numbers');
-  assert.ok(numbers.warnings.some((w) => w.includes('unverifiable-social-proof') || w.includes('unsourced-number')));
+  assert.ok(blockedIds.includes('numbers'), 'an invented number is refused, not merely flagged');
 
   const clean = kept.find((p) => p.id === 'clean');
   assert.equal(clean.warnings, undefined);
@@ -276,7 +275,7 @@ test('review markdown round-trips approvals and edits', () => {
 
 /* --------------------------------------------------------------------- apply */
 
-test('apply writes approved copy, backs up, and refuses stale matches', () => {
+test('legacy proposal status flags cannot authorize source writes', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-'));
   const file = 'page.html';
   fs.writeFileSync(path.join(tmp, file), '<h1>Old headline</h1>\n<button>Submit</button>\n');
@@ -291,19 +290,18 @@ test('apply writes approved copy, backs up, and refuses stale matches', () => {
     ],
   };
 
-  const backups = path.join(tmp, '.marketing-loop', 'backups');
-  const results = applyProposals(set, { cwd: tmp, config, backupDir: backups });
+  const results = applyProposals(set, {
+    cwd: tmp,
+    config,
+    backupDir: path.join(tmp, '.marketing-loop', 'backups'),
+  });
 
   const written = fs.readFileSync(path.join(tmp, file), 'utf8');
-  assert.ok(written.includes('Get my audit'));
+  assert.ok(written.includes('Submit'));
   assert.ok(written.includes('Old headline'), 'pending proposals are never applied');
-
-  assert.equal(results.find((r) => r.proposalId === 'ok').ok, true);
-  assert.equal(results.find((r) => r.proposalId === 'stale').ok, false);
-  assert.match(results.find((r) => r.proposalId === 'stale').reason, /not found/);
+  assert.equal(results.find((r) => r.proposalId === 'ok').ok, false);
+  assert.match(results.find((r) => r.proposalId === 'ok').reason, /schema v4/i);
   assert.equal(results.some((r) => r.proposalId === 'skipped'), false);
-
-  assert.ok(fs.existsSync(path.join(backups)), 'backup directory created');
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -313,17 +311,19 @@ test('apply escapes quotes to match the surrounding literal', () => {
   const file = 'x.js';
   fs.writeFileSync(path.join(tmp, file), "const cta = 'Submit';\n");
 
-  const set = {
-    generatedAt: '', product: 'test',
-    proposals: [{
-      id: 'q', copyId: 'c', file, line: 1, kind: 'cta',
-      before: 'Submit', after: "Get my team's audit", alternatives: [],
-      rationale: '', problemSolved: '', principles: [], evidence: [],
-      confidence: 0.8, status: 'approved', author: 'engine',
-    }],
-  };
+  const state = secureApplyState(tmp, [{
+    file,
+    before: 'Submit',
+    after: "Get my team's audit",
+  }]);
 
-  applyProposals(set, { cwd: tmp, config, backupDir: path.join(tmp, 'bk') });
+  applyProposals(state.set, {
+    cwd: tmp,
+    config: state.applyConfig,
+    backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory,
+    decisions: state.decisions,
+  });
   assert.equal(fs.readFileSync(path.join(tmp, file), 'utf8'), "const cta = 'Get my team\\'s audit';\n");
 
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -335,19 +335,23 @@ test('dry run changes nothing on disk', () => {
   const original = '<button>Submit</button>\n';
   fs.writeFileSync(path.join(tmp, file), original);
 
-  const set = {
-    generatedAt: '', product: 'test',
-    proposals: [{
-      id: 'd', copyId: 'c', file, line: 1, kind: 'cta', before: 'Submit', after: 'Get my audit',
-      alternatives: [], rationale: '', problemSolved: '', principles: [], evidence: [],
-      confidence: 0.8, status: 'approved', author: 'engine',
-    }],
-  };
+  const state = secureApplyState(tmp, [{
+    file,
+    before: 'Submit',
+    after: 'Get my audit',
+  }]);
 
-  const results = applyProposals(set, { cwd: tmp, config, backupDir: path.join(tmp, 'bk'), dryRun: true });
+  const results = applyProposals(state.set, {
+    cwd: tmp,
+    config: state.applyConfig,
+    backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory,
+    decisions: state.decisions,
+    dryRun: true,
+  });
   assert.equal(results[0].ok, true, results[0].reason);
   assert.equal(fs.readFileSync(path.join(tmp, file), 'utf8'), original);
-  assert.equal(set.proposals[0].status, 'approved', 'status is not marked applied on a dry run');
+  assert.equal(state.set.proposals[0].status, 'pending', 'status is not marked applied on a dry run');
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -807,11 +811,40 @@ test('state writes are atomic and content hashes are stable', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('starting a new scan archives and clears stale run artefacts', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-rotate-'));
+  writeJson(path.join(tmp, 'inventory.json'), { schemaVersion: 4, runId: 'old-run' });
+  writeJson(path.join(tmp, 'agent-output.json'), { runId: 'old-run' });
+  fs.writeFileSync(path.join(tmp, 'review.md'), 'old review');
+
+  const archived = rotateActiveRun(tmp);
+
+  assert.equal(archived, path.join(tmp, 'history', 'old-run'));
+  assert.equal(fs.existsSync(path.join(tmp, 'agent-output.json')), false);
+  assert.equal(fs.existsSync(path.join(tmp, 'review.md')), false);
+  assert.deepEqual(
+    readJsonStrict(path.join(tmp, 'history', 'old-run', 'agent-output.json')),
+    { runId: 'old-run' },
+  );
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('invalid config fails closed with the field name', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-config-'));
   fs.writeFileSync(path.join(tmp, 'marketing-loop.config.json'), '{"include":"src"}\n');
 
   assert.throws(() => loadConfig(tmp), /include.*array/i);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('empty configured claims cannot bypass factual guardrails', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-config-'));
+  fs.writeFileSync(
+    path.join(tmp, 'marketing-loop.config.json'),
+    '{"allowedClaims":["!!!"]}\n',
+  );
+
+  assert.throws(() => loadConfig(tmp), /allowedClaims.*non-empty/i);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -823,6 +856,17 @@ test('inventory preserves normalized text and exact multiline source', () => {
   assert.equal(item.source.raw, 'Hello\n    world &amp; friends');
   assert.equal(source.slice(item.source.start, item.source.end), item.source.raw);
   assert.equal(item.source.representation, 'html-text');
+});
+
+test('JavaScript string inventory keeps escapes in the span but decodes review text', () => {
+  const source = "const cta = 'Get your team\\'s deployment audit';\n";
+  const item = extractFromFile('copy.js', source).find((candidate) => candidate.kind === 'cta');
+
+  assert.ok(item);
+  assert.equal(item.text, "Get your team's deployment audit");
+  assert.equal(item.source.raw, "Get your team\\'s deployment audit");
+  assert.equal(source.slice(item.source.start, item.source.end), item.source.raw);
+  assert.equal(item.source.representation, 'js-string-single');
 });
 
 test('scan honors include roots and records file hashes', () => {
@@ -947,8 +991,8 @@ test('model-written evidence cannot source an invented number', () => {
     status: 'pending', author: 'llm',
   };
 
-  const { kept } = applyGuardrails([proposal], config);
-  assert.match(kept[0].warnings.join(' '), /unsourced-number/);
+  const { blocked } = applyGuardrails([proposal], config);
+  assert.match(blocked[0].hits.map((hit) => hit.rule).join(' '), /unsourced-number/);
 });
 
 test('agent dark patterns are blocked during import before review', () => {

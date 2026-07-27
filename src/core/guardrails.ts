@@ -124,8 +124,8 @@ export function checkProposal(proposal: Proposal, config: LoopConfig): Guardrail
   if (invented.length) {
     hits.push({
       rule: 'unsourced-number',
-      severity: 'warn',
-      message: `Introduces figures not present in the source or allowedClaims: ${invented.join(', ')}. Verify before approving.`,
+      severity: 'block',
+      message: `Introduces figures not present in the source or allowedClaims: ${invented.join(', ')}. Add verified figures to allowedClaims before proposing them.`,
     });
   }
 

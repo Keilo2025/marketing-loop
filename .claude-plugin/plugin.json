@@ -1,6 +1,6 @@
 {
   "name": "marketing-loop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Reads your code, works out what the product actually solves, rewrites the copy to sell that instead of the feature, and ships nothing until a human approves it on a canvas.",
   "author": {
     "name": "Christian Buchholz",

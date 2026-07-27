@@ -80,7 +80,7 @@ For each open item:
 2. Write the rewrite from that detail, not from the feature name.
 3. Give at least one genuine alternative, so I get a real choice rather than a rubber stamp.
 
-Append to \`.marketing-loop/proposals.json\`, merging with what is there. \`before\` must match the source character for character — copy it from the brief, do not retype it.
+Write only \`.marketing-loop/agent-output.json\` using the exact schema, \`runId\`, \`inventoryDigest\`, and open-item \`copyId\` values from the brief. Do not provide paths, source text, ids, authors, or statuses; import reconstructs them from the active inventory.
 
 **Never invent a fact.** No user counts, testimonials, percentages, guarantees or timings unless they are in the code, in \`allowedClaims\`, or in the brief. Where a rewrite wants a number you do not have, write it without and add \`NEEDS-FACT: <question>\` to that proposal's evidence array.
 
@@ -88,7 +88,9 @@ Append to \`.marketing-loop/proposals.json\`, merging with what is there. \`befo
 
 **Copy only.** No component restructuring, no new props, no logic, no styling.
 
-## 5. Hand back
+## 5. Validate and hand back
+
+Run \`npx marketing-loop@latest import\` and resolve every refused entry.
 
 Summarise: how many proposals, the three that matter most with before → after, every \`NEEDS-FACT\` question gathered into one list, and anything the data pointed at that copy alone cannot fix.
 
@@ -128,7 +130,7 @@ If \`marketing-data/\` was empty, name the single export that would sharpen the 
   {
     name: 'copy-review',
     description: 'Open the human approval canvas for pending copy changes',
-    body: `Check that \`.marketing-loop/proposals.json\` exists and has pending proposals. If not, run the marketing-loop command first.
+    body: `If \`.marketing-loop/agent-output.json\` exists, run \`npx marketing-loop@latest import\` first. Then check that \`.marketing-loop/proposals.json\` has pending proposals. If not, run the marketing-loop command first.
 
 \`\`\`bash
 npx marketing-loop@latest review --ui
@@ -441,6 +443,7 @@ This repository uses [\`marketing-loop\`](https://www.npmjs.com/package/marketin
 \`\`\`bash
 npx marketing-loop scan      # find every user-facing string and diagnose it
 npx marketing-loop propose   # engine writes what it can prove; leaves the rest to you
+npx marketing-loop import    # validates your agent-output.json
 npx marketing-loop review    # human approves — markdown, or --ui for the canvas
 npx marketing-loop apply     # writes only what a human approved
 \`\`\`
@@ -450,9 +453,10 @@ npx marketing-loop apply     # writes only what a human approved
 ### Your part
 
 1. Run \`npx marketing-loop propose\`, then read \`.marketing-loop/brief.md\`.
-2. Write rewrites for the **Open items** into \`.marketing-loop/proposals.json\`, merging with what is already there.
-3. Tell the human to run \`npx marketing-loop review --ui\` and approve.
-4. Only run \`apply\` if they ask you to in this session.
+2. Write the **Open items** only to \`.marketing-loop/agent-output.json\`, using the exact run identity and \`copyId\` values in the brief. Never write paths, source text, statuses, or canonical state.
+3. Run \`npx marketing-loop import\` and resolve every refusal.
+4. Tell the human to run \`npx marketing-loop review --ui\` and approve.
+5. Only run \`apply\` if they ask you to in this session.
 
 ### How to write the copy
 
@@ -469,7 +473,7 @@ Sell the problem you remove, not the feature that removes it. The reader does no
 - **Never invent a fact.** No user counts, testimonials, percentages, guarantees, timings or customer names unless they exist in the code, in \`allowedClaims\` in \`marketing-loop.config.json\`, or in the brief. If a line needs a fact you do not have, write it without and add \`NEEDS-FACT: <question>\` to the evidence array.
 - **Never produce a dark pattern.** Fabricated urgency or scarcity, confirmshaming, hidden billing, fake live-activity, invented social proof, decline buttons framed as mistakes. The guardrails reject these automatically; do not waste a turn on them.
 - **Copy only.** No component restructuring, no new props, no logic changes, no styling.
-- **Never edit source files with copy changes directly.** Everything goes through \`proposals.json\` and the human's approval. That gate is the entire point of the tool.
+- **Never edit source files or canonical loop state directly.** Your only write target is \`agent-output.json\`; \`import\` validates it before human approval. That gate is the entire point of the tool.
 `;
 
 function escapeRe(s: string): string {

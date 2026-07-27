@@ -71,6 +71,15 @@ export function validateConfig(raw: unknown, file = CONFIG_FILE): LoopConfig {
     if (!Array.isArray(candidate) || !candidate.every((item) => typeof item === 'string')) {
       throw new Error(`Invalid ${file}: ${key} must be an array of strings`);
     }
+    if (candidate.some((item) => !(item as string).trim())) {
+      throw new Error(`Invalid ${file}: ${key} entries must be non-empty strings`);
+    }
+    if (key === 'allowedClaims' && candidate.some((item) => !/[\p{L}\p{N}]/u.test(item as string))) {
+      throw new Error(`Invalid ${file}: allowedClaims entries must contain non-empty factual text`);
+    }
+    if (key === 'include' && candidate.length === 0) {
+      throw new Error(`Invalid ${file}: include must contain at least one path`);
+    }
     return [...candidate];
   };
 

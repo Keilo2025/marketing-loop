@@ -4,7 +4,7 @@ argument-hint: "[optional: --port 7788]"
 allowed-tools: Bash, Read
 ---
 
-Check that `.marketing-loop/proposals.json` exists and has pending proposals. If it does not, run `/marketing-loop` first.
+If `.marketing-loop/agent-output.json` exists, run `npx marketing-loop@latest import` first. Then check that `.marketing-loop/proposals.json` has pending proposals. If it does not, run `/marketing-loop` first.
 
 Then open the canvas:
 

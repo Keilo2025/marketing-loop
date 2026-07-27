@@ -100,8 +100,16 @@ export function extractFromFile(
     extractYaml(content, push);
   } else {
     // Everything else is markup-ish: HTML, JSX, Vue, Svelte, Astro, Liquid, ERB, PHP.
-    extractMarkup(content, push);
-    extractIdentifiers(content, push);
+    // In JS-family files, identifier extraction runs first so `cta = '...'`
+    // is represented as a JS string rather than mistaken for an HTML
+    // attribute by the deliberately tolerant markup regex.
+    if (['.js', '.jsx', '.ts', '.tsx', '.mjs'].includes(ext)) {
+      extractIdentifiers(content, push);
+      extractMarkup(content, push);
+    } else {
+      extractMarkup(content, push);
+      extractIdentifiers(content, push);
+    }
   }
 
   return items;
@@ -179,14 +187,60 @@ function extractIdentifiers(content: string, push: Push): void {
   while ((m = COPY_IDENT.exec(content))) {
     const quote = m[2] ?? '"';
     const start = m.index + m[0].length;
-    const end = content.indexOf(quote, start);
+    const end = closingQuote(content, start, quote);
     if (end === -1 || end - start > 300) continue;
     const value = content.slice(start, end);
     const ident = (m[1] ?? '').toLowerCase();
     const representation: SourceRepresentation =
       quote === "'" ? 'js-string-single' : quote === '`' ? 'js-template' : 'js-string-double';
-    push(value, start, kindForIdent(ident), [`ident:${m[1]}`], undefined, undefined, representation);
+    push(
+      value,
+      start,
+      kindForIdent(ident),
+      [`ident:${m[1]}`],
+      undefined,
+      undefined,
+      representation,
+      decodeJsString(value),
+    );
   }
+}
+
+function closingQuote(content: string, start: number, quote: string): number {
+  for (let index = start; index < content.length; index++) {
+    const char = content[index];
+    if (char === '\\') {
+      index++;
+      continue;
+    }
+    if (char === quote) return index;
+  }
+  return -1;
+}
+
+function decodeJsString(raw: string): string {
+  return raw.replace(
+    /\\(u\{[a-fA-F0-9]{1,6}\}|u[a-fA-F0-9]{4}|x[a-fA-F0-9]{2}|[\\'"`bfnrtv0])/g,
+    (_match, escape: string) => {
+      if (escape.startsWith('u{')) return String.fromCodePoint(Number.parseInt(escape.slice(2, -1), 16));
+      if (escape.startsWith('u')) return String.fromCharCode(Number.parseInt(escape.slice(1), 16));
+      if (escape.startsWith('x')) return String.fromCharCode(Number.parseInt(escape.slice(1), 16));
+      const values: Record<string, string> = {
+        '\\': '\\',
+        "'": "'",
+        '"': '"',
+        '`': '`',
+        b: '\b',
+        f: '\f',
+        n: '\n',
+        r: '\r',
+        t: '\t',
+        v: '\v',
+        0: '\0',
+      };
+      return values[escape] ?? escape;
+    },
+  );
 }
 
 /* -------------------------------------------------------------- markdown */

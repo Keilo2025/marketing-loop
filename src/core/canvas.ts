@@ -454,7 +454,7 @@ function card(p, i) {
   '<article class="card" data-id="' + p.id + '" data-status="' + esc(p.status) + '" id="card-' + p.id + '">' +
     '<div class="meta">' +
       '<span class="tag kind">' + esc(p.kind) + '</span>' +
-      '<span class="tag">' + esc(p.file) + ':' + p.line + '</span>' +
+      '<span class="tag">' + esc(p.file) + ':' + esc(p.line) + '</span>' +
       '<span class="tag">' + confidence + '% confident</span>' +
       '<span class="tag">' + esc(p.author) + '</span>' +
       dupeTag +

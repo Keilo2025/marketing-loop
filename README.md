@@ -55,9 +55,9 @@ Same product. The difference is that every claim came out of a file.
                   ▼
              ┌──────────┐        ┌───────────────┐
              │ propose  │───────▶│   brief.md    │──▶ your coding agent
-             │ (engine) │        │  (open items) │    writes the hard ones
+             │ (engine) │        │  (open items) │    writes agent-output.json
              └────┬─────┘        └───────┬───────┘
-                  │◀─────────────────────┘
+                  │◀──── validated import ───────┘
                   ▼
             ┌────────────┐
             │ guardrails │  dark patterns and invented facts stop here
@@ -112,7 +112,7 @@ It is also careful about the small things that give machine-written copy away. D
 
 `propose` writes `.marketing-loop/brief.md`: the product model, the behavioural evidence, the voice constraints, the persuasion library, the open items, and the exact output schema.
 
-**This is what makes it work inside a coding agent with no API key.** The CLI is the harness; your agent is the model. It reads the brief, opens the code behind each claim, writes rewrites into `proposals.json`.
+**This is what makes it work inside a coding agent with no API key.** The CLI is the harness; your agent is the model. It reads the brief, opens the code behind each claim, and writes only `.marketing-loop/agent-output.json`. Run `npx marketing-loop import` to validate and canonicalize that untrusted output into `proposals.json`; model-written paths, statuses, ids, and source text are never trusted.
 
 Standalone? `--llm` uses `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead. The approval gate applies either way.
 
@@ -120,7 +120,7 @@ Standalone? `--llm` uses `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead. The ap
 
 Blocked outright: fabricated urgency, fake scarcity, confirmshaming, hidden auto-renewal, decline options framed as mistakes, health and financial outcome promises.
 
-Flagged for review: unverifiable social proof, unprovable superlatives, banned vocabulary, and **any number that appears in the new copy but not in the old copy or your `allowedClaims`**. That last one catches the failure mode every LLM copywriter has — a precise, plausible, entirely invented statistic.
+Blocked outright too: **any number that appears in the new copy but not in the old copy or your `allowedClaims`**. Model-written evidence cannot vouch for its own claim. Unprovable superlatives and banned vocabulary remain visible warnings for the reviewer.
 
 ### 7. A human approves. Always.
 
@@ -128,7 +128,7 @@ Flagged for review: unverifiable social proof, unprovable superlatives, banned v
 npx marketing-loop review --ui
 ```
 
-A local page, `127.0.0.1`, no dependencies. Every proposal shows the current copy, the rewrite, alternatives, the reasoning, the psychology principles and the evidence. The rewrite box is editable — whatever you type wins. `j`/`k` to move, `a` to approve, `r` to reject.
+A local page, `127.0.0.1`, no dependencies. Each launch uses a secret URL token; mutation requests are same-origin and JSON-only. Every proposal shows the current copy, the rewrite, alternatives, the reasoning, the psychology principles and the evidence. The rewrite box is editable — whatever you type wins. `j`/`k` to move, `a` to approve, `r` to reject.
 
 Each proposal card shows:
 
@@ -203,7 +203,7 @@ Worth knowing before you approve twelve files: fixing the copy does not fix the 
 
 ### 8. Apply is paranoid
 
-Only approved proposals. `before` must still match the file exactly — if the file changed since the scan, it refuses rather than guesses. If the text appears twice and the line number does not disambiguate it, it refuses. Every touched file is backed up first.
+Approval is a separate ledger bound to the exact run, inventory, proposal, and final text by SHA-256 digests. Apply verifies the complete file hash and exact source span, rejects traversal, protected files and symlinks, then encodes the replacement for JSON, JavaScript, HTML, Markdown, or YAML. The whole batch is preflighted before any write; if one target is stale, nothing changes. Every touched file is backed up first.
 
 ```bash
 npx marketing-loop apply --dry-run   # see it first
@@ -211,7 +211,7 @@ npx marketing-loop apply
 npx marketing-loop revert            # undo the last run
 ```
 
-Quote style is preserved, apostrophes escaped, braces handled in JSX text nodes.
+Writes use temp-file replacement and rollback on failure. Prior run state is archived under `.marketing-loop/history/<runId>/`.
 
 ---
 
@@ -390,7 +390,7 @@ Every stage is exported, so the loop drops into CI, a git hook, or an MCP server
 No. Inside a coding agent, the agent is the model — it reads `brief.md`. The `--llm` flag exists for unattended runs.
 
 **Will it edit my code without asking?**
-No. `apply` only ever touches proposals a human marked approved, and `revert` undoes the last run.
+No. Agent output cannot approve itself. `apply` requires a human decision whose digest matches the exact proposal and final text, and `revert` restores the last backup.
 
 **Does my code or data get uploaded?**
 Not by default. Everything is local. With `--llm`, the brief — which includes aggregate figures from `marketing-data/` — goes to that API. Keep raw user-level exports out of the folder.
@@ -408,7 +408,7 @@ The extractor is conservative on purpose; false positives waste more of your tim
 The loop is meant to be run repeatedly. A headline that was too long *and* full of hype gets the hype removed on the first pass and the length flagged on the next. Run it again after applying.
 
 **It suggested something that is not true about my product.**
-That is a bug, and worth an issue. The engine cannot invent facts by construction; an agent or an API model can, which is exactly why the guardrails flag unsourced numbers and why a human sits between the proposal and the code.
+That is a bug, and worth an issue. Agent output is canonicalized against the active inventory, and unsourced numbers are blocked before review. A false non-numeric claim should still be reported.
 
 ---
 
@@ -417,7 +417,7 @@ That is a bug, and worth an issue. The engine cannot invent facts by constructio
 ```bash
 npm install
 npm run build
-npm test          # 19 tests, no network
+npm test          # unit, security, canvas, and end-to-end workflow tests
 node dist/cli.js scan --cwd tests/fixture
 ```
 

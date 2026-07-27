@@ -43,6 +43,17 @@ export function archiveActiveRun(outDir: string): string | null {
   return destination;
 }
 
+/** Rotate all active state only after it has been copied to run history. */
+export function rotateActiveRun(outDir: string): string | null {
+  const destination = archiveActiveRun(outDir);
+  if (!destination) return null;
+  for (const name of RUN_FILES) {
+    const active = path.join(outDir, name);
+    if (exists(active)) fs.rmSync(active);
+  }
+  return destination;
+}
+
 /**
  * Hash everything the reviewer was asked to approve, plus the exact final
  * text. Mutable workflow fields are deliberately excluded.

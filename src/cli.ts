@@ -31,7 +31,7 @@ import { propose } from './core/propose.js';
 import { renderReport } from './core/report.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from './core/review.js';
 import { digestInventoryItems, scanRepo, summarise } from './core/scan.js';
-import { archiveActiveRun, collectDecisionSet } from './core/state.js';
+import { collectDecisionSet, rotateActiveRun } from './core/state.js';
 import { DEFAULT_SURFACES } from './types.js';
 import type {
   BehaviorReport,
@@ -46,7 +46,7 @@ import type {
 import { exists, readJsonStrict, writeJson, writeText } from './util/fsx.js';
 import { c, log, table } from './util/log.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 interface Flags {
   _: string[];
@@ -145,7 +145,7 @@ interface ScanArtefacts {
 function runScan(cwd: string): ScanArtefacts {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  archiveActiveRun(p.out);
+  rotateActiveRun(p.out);
 
   const scan = scanRepo(cwd, config);
   const { items } = scan;
