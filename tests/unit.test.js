@@ -10,6 +10,7 @@ import { applyProposals } from '../dist/core/apply.js';
 import { loadBehavior, parseDelimited } from '../dist/core/behavior.js';
 import { extractFromFile, inferSurface, looksLikeCopy } from '../dist/core/extract.js';
 import { applyGuardrails } from '../dist/core/guardrails.js';
+import { importAgentOutput, parseAgentOutput } from '../dist/core/ingest.js';
 import { AGENT_TARGETS, install, uninstall } from '../dist/core/install.js';
 import { buildProductModel } from '../dist/core/product.js';
 import { fixArticles, propose } from '../dist/core/propose.js';
@@ -691,4 +692,127 @@ test('walk reports truncation instead of silently presenting a partial scan', ()
   assert.equal(result.files.length, 1);
   assert.equal(result.truncated, true);
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('agent output is canonicalized from inventory and cannot approve itself', () => {
+  const scan = scanRepo(FIXTURE, config, 'run-import');
+  const item = scan.items.find((candidate) => candidate.text === 'No deployments found.');
+  assert.ok(item);
+  const inventory = {
+    schemaVersion: 4,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    repositoryRoot: FIXTURE,
+    filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy,
+    truncated: scan.truncated,
+    items: scan.items,
+  };
+  const set = {
+    schemaVersion: 4,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    product: 'test',
+    proposals: [],
+  };
+  const output = {
+    schemaVersion: 4,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    proposals: [{
+      copyId: item.id,
+      after: 'Connect your first deployment to see it here.',
+      alternatives: ['Connect a deployment'],
+      rationale: 'Gives the empty state a recovery action.',
+      problemSolved: 'The user did not know what to do next.',
+      principles: ['goal-gradient'],
+      evidence: ['src/app/audit/page.jsx'],
+      confidence: 0.8,
+      file: '../outside.txt',
+      status: 'approved',
+      author: 'engine',
+    }],
+  };
+
+  const result = importAgentOutput(set, inventory, output, config);
+  const [proposal] = result.set.proposals;
+
+  assert.equal(result.accepted, 1);
+  assert.equal(proposal.file, item.file);
+  assert.equal(proposal.before, item.text);
+  assert.equal(proposal.status, 'pending');
+  assert.equal(proposal.author, 'agent');
+  assert.match(proposal.id, /^[a-f0-9]{8}$/);
+});
+
+test('agent output identity must match the active run', () => {
+  const raw = JSON.stringify({
+    schemaVersion: 4,
+    runId: 'wrong-run',
+    inventoryDigest: 'wrong-digest',
+    proposals: [],
+  });
+  const parsed = parseAgentOutput(raw, 'agent-output.json');
+  const set = {
+    schemaVersion: 4, runId: 'right-run', inventoryDigest: 'right-digest',
+    generatedAt: '', product: 'test', proposals: [],
+  };
+  const inventory = {
+    schemaVersion: 4, runId: 'right-run', inventoryDigest: 'right-digest',
+    generatedAt: '', repositoryRoot: FIXTURE, filesScanned: 0,
+    filesWithCopy: 0, truncated: false, items: [],
+  };
+
+  assert.throws(
+    () => importAgentOutput(set, inventory, parsed, config),
+    /does not match the active run/,
+  );
+});
+
+test('model-written evidence cannot source an invented number', () => {
+  const proposal = {
+    id: 'claim', copyId: 'c', file: 'page.html', line: 1, kind: 'headline',
+    before: 'Trusted by teams', after: 'Trusted by 12,347 teams',
+    alternatives: [], rationale: '', problemSolved: '', principles: [],
+    evidence: ['README says 12,347 teams'], confidence: 0.9,
+    status: 'pending', author: 'llm',
+  };
+
+  const { kept } = applyGuardrails([proposal], config);
+  assert.match(kept[0].warnings.join(' '), /unsourced-number/);
+});
+
+test('agent dark patterns are blocked during import before review', () => {
+  const scan = scanRepo(FIXTURE, config, 'run-dark');
+  const item = scan.items.find((candidate) => candidate.text === 'Submit');
+  assert.ok(item);
+  const inventory = {
+    schemaVersion: 4, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    generatedAt: '', repositoryRoot: FIXTURE, filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy, truncated: false, items: scan.items,
+  };
+  const set = {
+    schemaVersion: 4, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    generatedAt: '', product: 'test', proposals: [],
+  };
+  const output = {
+    schemaVersion: 4, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    proposals: [{
+      copyId: item.id,
+      after: 'Last chance — offer ends tonight',
+      alternatives: [],
+      rationale: 'Pressure the user.',
+      problemSolved: 'None.',
+      principles: [],
+      evidence: [],
+      confidence: 0.8,
+    }],
+  };
+
+  const result = importAgentOutput(set, inventory, output, config);
+  assert.equal(result.accepted, 0);
+  assert.equal(result.blocked.length, 1);
+  assert.equal(result.set.proposals.length, 0);
 });

@@ -100,19 +100,25 @@ export function checkProposal(proposal: Proposal, config: LoopConfig): Guardrail
 
   for (const rule of [...DARK_PATTERNS, ...WEAK_OUTPUT]) {
     if (!rule.test.test(text)) continue;
-    // An explicit allowedClaims entry is a human vouching for the fact.
-    const vouched = config.allowedClaims.some((claim) => rule.test.test(claim));
+    // An allowed claim vouches only for matching copy, not every text in the
+    // same regex category.
+    const candidate = normalizeClaim(proposal.edited ?? proposal.after);
+    const vouched = config.allowedClaims.some((claim) => {
+      const normalized = normalizeClaim(claim);
+      return candidate === normalized || candidate.includes(normalized);
+    });
     if (vouched) continue;
     hits.push({ rule: rule.id, severity: rule.severity, message: rule.message });
   }
 
   // Numbers that appear in the new copy but nowhere in the old copy or the
   // allowed claims are, by definition, invented.
-  const newNumbers = extractNumbers(proposal.edited ?? proposal.after);
+  const newNumbers = extractNumbers(
+    [proposal.edited ?? proposal.after, ...proposal.alternatives].join(' '),
+  );
   const known = new Set([
     ...extractNumbers(proposal.before),
     ...config.allowedClaims.flatMap(extractNumbers),
-    ...proposal.evidence.flatMap(extractNumbers),
   ]);
   const invented = newNumbers.filter((n) => !known.has(n));
   if (invented.length) {
@@ -177,4 +183,8 @@ function extractNumbers(text: string): string[] {
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeClaim(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}%]+/gu, ' ').trim();
 }

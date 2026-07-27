@@ -14,6 +14,7 @@ export { renderBrief } from './core/brief.js';
 export { serveCanvas } from './core/canvas.js';
 export { extractFromFile, inferSurface, looksLikeCopy, SCANNABLE } from './core/extract.js';
 export { applyGuardrails, checkProposal } from './core/guardrails.js';
+export { importAgentOutput, parseAgentOutput } from './core/ingest.js';
 export {
   AGENT_TARGETS,
   detectAgents,
