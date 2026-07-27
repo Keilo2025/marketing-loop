@@ -22,6 +22,10 @@ export function renderReview(set: ProposalSet): string {
 
   s.push('# Copy review');
   s.push('');
+  if (set.runId && set.inventoryDigest) {
+    s.push(`<!-- marketing-loop-run:${set.runId}:${set.inventoryDigest} -->`);
+    s.push('');
+  }
   s.push(`${set.proposals.length} proposals for **${set.product}**, generated ${set.generatedAt}.`);
   s.push('');
   s.push('**How to use this file**');

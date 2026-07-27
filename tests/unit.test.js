@@ -18,6 +18,11 @@ import { PRINCIPLES } from '../dist/core/psychology.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from '../dist/core/review.js';
 import { linkSiblings, localeOf, siblingGroups } from '../dist/core/siblings.js';
 import { scanRepo } from '../dist/core/scan.js';
+import {
+  collectDecisionSet,
+  proposalDigest,
+  validateDecisionSet,
+} from '../dist/core/state.js';
 import { defaultConfig, loadConfig } from '../dist/config.js';
 import { hashText, readJsonStrict, walkDetailed, writeJson } from '../dist/util/fsx.js';
 
@@ -815,4 +820,55 @@ test('agent dark patterns are blocked during import before review', () => {
   assert.equal(result.accepted, 0);
   assert.equal(result.blocked.length, 1);
   assert.equal(result.set.proposals.length, 0);
+});
+
+test('approval records are bound to the run, inventory, proposal, and final text', () => {
+  const proposal = {
+    id: 'p-bound', copyId: 'c-bound', file: 'page.html', line: 1, kind: 'cta',
+    before: 'Submit', after: 'Get my audit', alternatives: [],
+    rationale: 'Names the deliverable.', problemSolved: 'The action was vague.',
+    principles: [], evidence: [], confidence: 0.8, status: 'pending', author: 'engine',
+  };
+  const set = {
+    schemaVersion: 4, runId: 'run-bound', inventoryDigest: 'inventory-bound',
+    generatedAt: '', product: 'test', proposals: [proposal],
+  };
+  let markdown = renderReview(set);
+  markdown = markdown.replace(
+    '<!-- marketing-loop:p-bound -->\n- [ ] APPROVE',
+    '<!-- marketing-loop:p-bound -->\n- [x] APPROVE',
+  );
+
+  const decisions = collectDecisionSet(set, markdown);
+  assert.equal(decisions.runId, set.runId);
+  assert.equal(decisions.inventoryDigest, set.inventoryDigest);
+  assert.equal(decisions.decisions[0].proposalDigest, proposalDigest(proposal, 'Get my audit'));
+  assert.equal(validateDecisionSet(set, decisions).length, 0);
+
+  const tampered = {
+    ...set,
+    proposals: [{ ...proposal, after: 'A different proposal' }],
+  };
+  assert.match(validateDecisionSet(tampered, decisions)[0], /digest/i);
+});
+
+test('a review file from another run is refused instead of silently reused', () => {
+  const proposal = {
+    id: 'p-stale', copyId: 'c-stale', file: 'page.html', line: 1, kind: 'cta',
+    before: 'Submit', after: 'Get my audit', alternatives: [], rationale: '',
+    problemSolved: '', principles: [], evidence: [], confidence: 0.8,
+    status: 'pending', author: 'engine',
+  };
+  const oldSet = {
+    schemaVersion: 4, runId: 'old-run', inventoryDigest: 'old-inventory',
+    generatedAt: '', product: 'test', proposals: [proposal],
+  };
+  const currentSet = {
+    ...oldSet, runId: 'current-run', inventoryDigest: 'current-inventory',
+  };
+
+  assert.throws(
+    () => collectDecisionSet(currentSet, renderReview(oldSet)),
+    /different run/i,
+  );
 });

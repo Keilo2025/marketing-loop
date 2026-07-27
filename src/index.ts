@@ -16,6 +16,12 @@ export { extractFromFile, inferSurface, looksLikeCopy, SCANNABLE } from './core/
 export { applyGuardrails, checkProposal } from './core/guardrails.js';
 export { importAgentOutput, parseAgentOutput } from './core/ingest.js';
 export {
+  collectDecisionSet,
+  decisionSetFrom,
+  proposalDigest,
+  validateDecisionSet,
+} from './core/state.js';
+export {
   AGENT_TARGETS,
   detectAgents,
   install,
