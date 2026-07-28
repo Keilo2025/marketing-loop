@@ -10,6 +10,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { CONFIG_FILE, loadConfig } from '../config.js';
+import { resolveCatalogueScope } from './catalogue.js';
 import { exists, read, writeText } from '../util/fsx.js';
 
 export interface AgentTarget {
@@ -300,7 +302,7 @@ export function install(
 
   for (const target of targets) {
     const abs = path.join(cwd, target.file);
-    const block = renderBlock(target);
+    const block = renderBlock(target, cwd);
 
     // Commands first — these are the ones a person can actually find.
     if (target.commandDir) {
@@ -412,14 +414,14 @@ function renderCommand(command: AgentCommand, format: 'plain' | 'described'): st
   return `# ${command.description}\n\n${body}`;
 }
 
-function renderBlock(target: AgentTarget): string {
+function renderBlock(target: AgentTarget, cwd: string): string {
   const body = INSTRUCTIONS.trim();
 
   if (target.format === 'mdc') {
     return [
       '---',
       'description: Marketing copy loop — how to write and ship product copy in this repo',
-      'globs: ["marketing-loop.config.json","marketing-data/**","**/messages/*.json","**/messages/**/*.json"]',
+      `globs: ${JSON.stringify(cursorGlobs(cwd))}`,
       'alwaysApply: false',
       '---',
       '',
@@ -433,6 +435,21 @@ function renderBlock(target: AgentTarget): string {
   }
 
   return [START, '', body, '', END].join('\n');
+}
+
+function cursorGlobs(cwd: string): string[] {
+  try {
+    const scope = resolveCatalogueScope(cwd, loadConfig(cwd));
+    const sourceGlobs = scope.layout === 'namespaced'
+      ? [`${scope.messagesDir}/${scope.sourceLocale}/**/*.json`]
+      : [...scope.files];
+    return ['language-loop.config.json', CONFIG_FILE, ...sourceGlobs];
+  } catch {
+    // Installation can happen before init creates a source catalogue. Config
+    // files still activate the rule once the catalogue is configured, without
+    // broadening it to arbitrary application files.
+    return ['language-loop.config.json', CONFIG_FILE];
+  }
 }
 
 const INSTRUCTIONS = `

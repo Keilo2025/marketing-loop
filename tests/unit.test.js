@@ -561,6 +561,31 @@ test('installed guidance reads only the source catalogue, never code or target l
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('Cursor rule activates on the resolved source catalogue without target locales', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cursor-scope-'));
+  fs.mkdirSync(path.join(tmp, 'locales', 'en-US'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, 'locales', 'de-DE'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'locales', 'en-US', 'common.json'), '{"cta":"Start"}\n');
+  fs.writeFileSync(path.join(tmp, 'locales', 'de-DE', 'common.json'), '{"cta":"Starten"}\n');
+  fs.writeFileSync(path.join(tmp, 'language-loop.config.json'), JSON.stringify({
+    messagesDir: 'locales',
+    sourceLocale: 'en-US',
+    layout: 'namespaced',
+  }));
+
+  install(tmp, AGENT_TARGETS.filter((target) => target.id === 'cursor'));
+  const rule = fs.readFileSync(path.join(tmp, '.cursor/rules/marketing-loop.mdc'), 'utf8');
+
+  assert.match(rule, /^---[\s\S]*language-loop\.config\.json/m);
+  assert.match(rule, /locales\/en-US\/\*\*\/\*\.json/);
+  assert.doesNotMatch(rule, /\*\*\/messages|messages\/\*|"messages"/);
+  assert.doesNotMatch(rule, /locales\/de-DE/);
+  assert.match(rule, /only the configured source catalogue/i);
+  assert.match(rule, /do not open application code or target locales/i);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('AGENTS.md section installs and strips cleanly around existing content', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-agents-'));
   fs.writeFileSync(path.join(tmp, 'AGENTS.md'), '# My project\n\nExisting instructions.\n');
