@@ -1,0 +1,16 @@
+{
+  "landing": {
+    "headline": "Your deployment dashboard",
+    "subhead": "We help teams monitor their deployments with our innovative platform.",
+    "cta": "Get Started",
+    "description": "We are a revolutionary platform that leverages cutting-edge technology to supercharge your deployment workflow.",
+    "headlineLong": "A powerful deployment monitoring dashboard for modern engineering teams at scale"
+  },
+  "audit": {
+    "headline": "Your free deployment audit",
+    "subhead": "We analyse your last 30 deployments and tell you what broke.",
+    "action": "Submit",
+    "emptyState": "No deployments found.",
+    "errorMessage": "Something went wrong. Error code 500."
+  }
+}

@@ -103,6 +103,7 @@ test('diagnoses the usual copy failures', () => {
   const findings = analyse(items, context, config);
   const rules = new Set(findings.map((f) => f.rule));
 
+  assert.ok(items.every((item) => item.file === 'messages/en.json'), 'scans only source catalogue entries');
   assert.ok(rules.has('generic-cta'), 'flags Submit / Get Started');
   assert.ok(rules.has('company-centric'), 'flags "We help teams..."');
   assert.ok(rules.has('hype-vocabulary'), 'flags revolutionary / cutting-edge');
@@ -146,7 +147,7 @@ test('reads the data directory and derives problems', () => {
 
 /* ----------------------------------------------------------------- proposals */
 
-test('rewrites a generic cta using a deliverable from the same page', () => {
+test('rewrites a generic cta using a deliverable from the same catalogue namespace', () => {
   const { items } = scanRepo(FIXTURE, config);
   const context = contextForFixture(items);
   const findings = analyse(items, context, config);
@@ -155,16 +156,15 @@ test('rewrites a generic cta using a deliverable from the same page', () => {
 
   const { proposals, openItems } = propose({ items, findings, context, behavior, config, ranked });
 
-  const cta = proposals.find((p) => p.before === 'Submit' && p.file.endsWith('page.jsx'));
-  assert.ok(cta, 'produced a proposal for the audit page Submit button');
-  assert.equal(cta.after, 'Get my free deployment audit', 'borrowed the deliverable from the heading above it');
+  const cta = proposals.find((p) => p.before === 'Submit' && p.copyId === items.find((item) => item.catalogueKey === 'audit.action')?.id);
+  assert.ok(cta, 'produced a proposal for the audit catalogue action');
+  assert.equal(cta.after, 'Get my free deployment audit', 'borrowed the deliverable from the audit namespace');
   assert.ok(cta.principles.includes('endowment'));
   assert.ok(cta.rationale.length > 60);
   assert.ok(cta.alternatives.length > 0, 'the human gets a real choice');
 
-  // The same word on a different page is a different button, not a duplicate.
-  const otherCta = proposals.find((p) => p.before === 'Submit' && p.file === 'index.html');
-  assert.ok(otherCta, 'identical text in another file gets its own proposal');
+  const otherCta = proposals.find((p) => p.before === 'Get Started');
+  assert.ok(otherCta, 'a CTA in another catalogue namespace gets its own proposal');
   assert.notEqual(otherCta.after, cta.after, 'and its own deliverable');
 
   assert.ok(openItems.length > 0, 'leaves judgement calls to a model');
@@ -314,8 +314,9 @@ test('legacy proposal status flags cannot authorize source writes', () => {
 
 test('apply escapes quotes to match the surrounding literal', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-'));
-  const file = 'x.js';
-  fs.writeFileSync(path.join(tmp, file), "const cta = 'Submit';\n");
+  const file = 'messages/en/cta.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, file), '{"action":"Submit"}\n');
 
   const state = secureApplyState(tmp, [{
     file,
@@ -330,15 +331,16 @@ test('apply escapes quotes to match the surrounding literal', () => {
     inventory: state.inventory,
     decisions: state.decisions,
   });
-  assert.equal(fs.readFileSync(path.join(tmp, file), 'utf8'), "const cta = 'Get my team\\'s audit';\n");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, file), 'utf8')), { action: "Get my team's audit" });
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 test('dry run changes nothing on disk', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-'));
-  const file = 'page.html';
-  const original = '<button>Submit</button>\n';
+  const file = 'messages/en/cta.json';
+  const original = '{"action":"Submit"}\n';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
   fs.writeFileSync(path.join(tmp, file), original);
 
   const state = secureApplyState(tmp, [{
@@ -367,6 +369,7 @@ function secureApplyState(tmp, changes, applyConfig = {
   include: ['.'],
   exclude: [],
   protectedFiles: [],
+  catalogue: { messagesDir: 'messages', sourceLocale: 'en', layout: 'namespaced' },
 }) {
   const scan = scanRepo(tmp, applyConfig, 'run-apply');
   const inventory = {
@@ -418,7 +421,8 @@ function secureApplyState(tmp, changes, applyConfig = {
 
 test('secure apply uses the approval ledger, exact source span, and representation encoding', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-secure-'));
-  const file = 'messages.json';
+  const file = 'messages/en/cta.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
   fs.writeFileSync(path.join(tmp, file), '{"cta":"Get started today"}\n');
   const state = secureApplyState(tmp, [{
     file,
@@ -444,9 +448,11 @@ test('secure apply uses the approval ledger, exact source span, and representati
 
 test('secure apply rejects traversal, protected files, and symlink targets', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-confine-'));
-  fs.writeFileSync(path.join(tmp, 'page.html'), '<button>Start my audit</button>\n');
+  const file = 'messages/en/page.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, file), '{"action":"Start my audit"}\n');
   const state = secureApplyState(tmp, [{
-    file: 'page.html',
+    file,
     before: 'Start my audit',
     after: 'Run my audit',
   }]);
@@ -462,18 +468,18 @@ test('secure apply rejects traversal, protected files, and symlink targets', () 
   });
   assert.match(results[0].reason, /inside the repository|inventory digest/i);
 
-  item.file = 'page.html';
-  proposal.file = 'page.html';
+  item.file = file;
+  proposal.file = file;
   state.decisions.decisions[0].proposalDigest = proposalDigest(proposal, proposal.after);
-  const protectedConfig = { ...state.applyConfig, protectedFiles: ['./page.html'] };
+  const protectedConfig = { ...state.applyConfig, protectedFiles: [`./${file}`] };
   results = applyProposals(state.set, {
     cwd: tmp, config: protectedConfig, backupDir: path.join(tmp, 'bk'),
     inventory: state.inventory, decisions: state.decisions,
   });
   assert.match(results[0].reason, /protected/i);
 
-  fs.renameSync(path.join(tmp, 'page.html'), path.join(tmp, 'real.html'));
-  fs.symlinkSync('real.html', path.join(tmp, 'page.html'));
+  fs.renameSync(path.join(tmp, file), path.join(tmp, 'messages', 'en', 'real.json'));
+  fs.symlinkSync('real.json', path.join(tmp, file));
   results = applyProposals(state.set, {
     cwd: tmp, config: state.applyConfig, backupDir: path.join(tmp, 'bk'),
     inventory: state.inventory, decisions: state.decisions,
@@ -484,13 +490,16 @@ test('secure apply rejects traversal, protected files, and symlink targets', () 
 
 test('secure apply preflights the whole batch and writes nothing when one file is stale', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-atomic-'));
-  fs.writeFileSync(path.join(tmp, 'a.html'), '<button>Start first audit</button>\n');
-  fs.writeFileSync(path.join(tmp, 'b.html'), '<button>Start second audit</button>\n');
+  const firstFile = 'messages/en/a.json';
+  const secondFile = 'messages/en/b.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, firstFile), '{"action":"Start first audit"}\n');
+  fs.writeFileSync(path.join(tmp, secondFile), '{"action":"Start second audit"}\n');
   const state = secureApplyState(tmp, [
-    { file: 'a.html', before: 'Start first audit', after: 'Run first audit' },
-    { file: 'b.html', before: 'Start second audit', after: 'Run second audit' },
+    { file: firstFile, before: 'Start first audit', after: 'Run first audit' },
+    { file: secondFile, before: 'Start second audit', after: 'Run second audit' },
   ]);
-  fs.writeFileSync(path.join(tmp, 'b.html'), '<button>Changed after scan</button>\n');
+  fs.writeFileSync(path.join(tmp, secondFile), '{"action":"Changed after scan"}\n');
 
   const results = applyProposals(state.set, {
     cwd: tmp, config: state.applyConfig, backupDir: path.join(tmp, 'bk'),
@@ -498,15 +507,17 @@ test('secure apply preflights the whole batch and writes nothing when one file i
   });
 
   assert.equal(results.some((result) => !result.ok), true);
-  assert.equal(fs.readFileSync(path.join(tmp, 'a.html'), 'utf8'), '<button>Start first audit</button>\n');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, firstFile), 'utf8')), { action: 'Start first audit' });
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 test('changing an approved proposal after review invalidates the entire apply batch', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-forged-'));
-  fs.writeFileSync(path.join(tmp, 'page.html'), '<button>Start my audit</button>\n');
+  const file = 'messages/en/page.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, file), '{"audit":{"action":"Start my audit"}}\n');
   const state = secureApplyState(tmp, [{
-    file: 'page.html',
+    file,
     before: 'Start my audit',
     after: 'Run my audit',
   }]);
@@ -518,7 +529,7 @@ test('changing an approved proposal after review invalidates the entire apply ba
   });
 
   assert.match(results[0].reason, /digest/i);
-  assert.equal(fs.readFileSync(path.join(tmp, 'page.html'), 'utf8'), '<button>Start my audit</button>\n');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, file), 'utf8')), { audit: { action: 'Start my audit' } });
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -875,12 +886,14 @@ test('JavaScript string inventory keeps escapes in the span but decodes review t
   assert.equal(item.source.representation, 'js-string-single');
 });
 
-test('scan honors include roots and records file hashes', () => {
+test('scan uses the configured source catalogue and records file hashes', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-scan-'));
   fs.mkdirSync(path.join(tmp, 'src'));
   fs.mkdirSync(path.join(tmp, 'elsewhere'));
+  fs.mkdirSync(path.join(tmp, 'messages'));
   fs.writeFileSync(path.join(tmp, 'src', 'a.html'), '<h1>Inside source copy</h1>');
   fs.writeFileSync(path.join(tmp, 'elsewhere', 'b.html'), '<h1>Outside requested scope</h1>');
+  fs.writeFileSync(path.join(tmp, 'messages', 'en.json'), '{"headline":"Inside source catalogue"}\n');
 
   const result = scanRepo(
     tmp,
@@ -888,10 +901,10 @@ test('scan honors include roots and records file hashes', () => {
     'run-test',
   );
 
-  assert.deepEqual(result.items.map((item) => item.file), ['src/a.html']);
+  assert.deepEqual(result.items.map((item) => item.file), ['messages/en.json']);
   assert.equal(
     result.items[0].fileHash,
-    hashText(fs.readFileSync(path.join(tmp, 'src', 'a.html'), 'utf8')),
+    hashText(fs.readFileSync(path.join(tmp, 'messages', 'en.json'), 'utf8')),
   );
   assert.equal(result.runId, 'run-test');
   assert.equal(typeof result.inventoryDigest, 'string');
@@ -1087,9 +1100,11 @@ test('a review file from another run is refused instead of silently reused', () 
 
 test('canvas requires its launch token and writes digest-bound decisions', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-canvas-'));
-  fs.writeFileSync(path.join(tmp, 'page.html'), '<button>Start my audit</button>\n');
+  const file = 'messages/en/page.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, file), '{"action":"Start my audit"}\n');
   const state = secureApplyState(tmp, [{
-    file: 'page.html',
+    file,
     before: 'Start my audit',
     after: 'Run my audit',
   }]);
