@@ -561,6 +561,12 @@ test('installed guidance reads only the source catalogue, never code or target l
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+function cursorRuleGlobs(rule) {
+  const match = /^globs: (.+)$/m.exec(rule);
+  assert.ok(match, 'Cursor rule frontmatter must declare activation globs');
+  return JSON.parse(match[1]);
+}
+
 test('Cursor rule activates on the resolved source catalogue without target locales', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cursor-scope-'));
   fs.mkdirSync(path.join(tmp, 'locales', 'en-US'), { recursive: true });
@@ -576,12 +582,26 @@ test('Cursor rule activates on the resolved source catalogue without target loca
   install(tmp, AGENT_TARGETS.filter((target) => target.id === 'cursor'));
   const rule = fs.readFileSync(path.join(tmp, '.cursor/rules/marketing-loop.mdc'), 'utf8');
 
-  assert.match(rule, /^---[\s\S]*language-loop\.config\.json/m);
-  assert.match(rule, /locales\/en-US\/\*\*\/\*\.json/);
-  assert.doesNotMatch(rule, /\*\*\/messages|messages\/\*|"messages"/);
-  assert.doesNotMatch(rule, /locales\/de-DE/);
+  assert.deepEqual(cursorRuleGlobs(rule), [
+    'language-loop.config.json',
+    'marketing-loop.config.json',
+    'locales/en-US/**/*.json',
+  ]);
   assert.match(rule, /only the configured source catalogue/i);
   assert.match(rule, /do not open application code or target locales/i);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('Cursor rule falls back to config-only activation without a resolved scope', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cursor-fallback-'));
+  install(tmp, AGENT_TARGETS.filter((target) => target.id === 'cursor'));
+
+  const rule = fs.readFileSync(path.join(tmp, '.cursor/rules/marketing-loop.mdc'), 'utf8');
+  assert.deepEqual(cursorRuleGlobs(rule), [
+    'language-loop.config.json',
+    'marketing-loop.config.json',
+  ]);
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
