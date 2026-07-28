@@ -21,10 +21,12 @@ import type {
   Proposal,
   ProposalSet,
 } from '../types.js';
+import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
 import { hashText, writeText } from '../util/fsx.js';
 import { checkProposal } from './guardrails.js';
 import { digestInventoryItems } from './scan.js';
 import { validateDecisionSet } from './state.js';
+import { resolveCatalogueScope } from './catalogue.js';
 
 export interface ApplyOptions {
   cwd: string;
@@ -36,14 +38,14 @@ export interface ApplyOptions {
 }
 
 export function applyProposals(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
-  if (set.schemaVersion === 4) return applySecure(set, opts);
+  if (set.schemaVersion === STATE_SCHEMA_VERSION) return applySecure(set, opts);
   return set.proposals
     .filter((proposal) => proposal.status === 'approved')
     .map((proposal) => ({
       proposalId: proposal.id,
       file: proposal.file,
       ok: false,
-      reason: 'legacy proposal status cannot authorize writes; regenerate schema v4 state and review it',
+      reason: ACTIVE_STATE_SCHEMA_ERROR,
     }));
 }
 
@@ -72,16 +74,30 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
   };
 
   if (!inventory || !decisions) {
-    return failAll('schema v4 apply requires inventory.json and decisions.json');
+    return failAll(ACTIVE_STATE_SCHEMA_ERROR);
   }
   if (
-    inventory.schemaVersion !== 4 ||
+    inventory.schemaVersion !== STATE_SCHEMA_VERSION ||
+    inventory.scopeDigest !== set.scopeDigest ||
+    inventory.sourceLocale !== set.sourceLocale ||
     inventory.runId !== set.runId ||
     inventory.inventoryDigest !== set.inventoryDigest
   ) {
     return failAll('inventory does not match the active proposal run');
   }
-  if (digestInventoryItems(inventory.items) !== inventory.inventoryDigest) {
+  let scope;
+  try {
+    scope = resolveCatalogueScope(opts.cwd, opts.config);
+  } catch (error) {
+    return failAll(error instanceof Error ? error.message : String(error));
+  }
+  if (
+    inventory.scopeDigest !== scope.scopeDigest ||
+    inventory.sourceLocale !== scope.sourceLocale
+  ) {
+    return failAll('active state does not match the configured source catalogue');
+  }
+  if (digestInventoryItems(inventory.items, inventory.scopeDigest, inventory.sourceLocale) !== inventory.inventoryDigest) {
     return failAll('inventory digest does not match its contents');
   }
   const decisionErrors = validateDecisionSet(set, decisions);
@@ -105,6 +121,9 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
       if (!item) throw new Error('copyId is not present in the active inventory');
       if (
         proposal.file !== item.file ||
+        proposal.catalogueKey !== item.catalogueKey ||
+        proposal.sourceLocale !== item.sourceLocale ||
+        proposal.scopeDigest !== (item.scopeDigest ?? inventory.scopeDigest) ||
         proposal.line !== item.line ||
         proposal.before !== item.text ||
         proposal.kind !== item.kind

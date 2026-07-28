@@ -15,6 +15,7 @@ import type {
   LoopConfig,
   MarketingContext,
 } from '../types.js';
+import { STATE_SCHEMA_VERSION } from '../types.js';
 import type { ProposeOutput } from './propose.js';
 import { principleCheatSheet } from './psychology.js';
 
@@ -195,7 +196,7 @@ export function renderBrief(input: BriefInput): string {
   s.push(
     JSON.stringify(
       {
-        schemaVersion: 4,
+        schemaVersion: STATE_SCHEMA_VERSION,
         runId: input.runId,
         inventoryDigest: input.inventoryDigest,
         proposals: [

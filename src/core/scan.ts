@@ -13,6 +13,8 @@ export interface ScanResult {
   truncated: boolean;
   runId: string;
   inventoryDigest: string;
+  scopeDigest: string;
+  sourceLocale: string;
 }
 
 export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()): ScanResult {
@@ -32,7 +34,7 @@ export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()):
   }
 
   const unique = dedupe(items);
-  const inventoryDigest = digestInventoryItems(unique);
+  const inventoryDigest = digestInventoryItems(unique, scope.scopeDigest, scope.sourceLocale);
 
   return {
     items: unique,
@@ -42,11 +44,13 @@ export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()):
     truncated: false,
     runId,
     inventoryDigest,
+    scopeDigest: scope.scopeDigest,
+    sourceLocale: scope.sourceLocale,
   };
 }
 
-export function digestInventoryItems(items: CopyItem[]): string {
-  return hashText(JSON.stringify(items.map((item) => ({
+export function digestInventoryItems(items: CopyItem[], scopeDigest = items[0]?.scopeDigest ?? '', sourceLocale = items[0]?.sourceLocale ?? ''): string {
+  return hashText(JSON.stringify({ scopeDigest, sourceLocale, items: items.map((item) => ({
     id: item.id,
     catalogueKey: item.catalogueKey,
     sourceLocale: item.sourceLocale,
@@ -61,7 +65,7 @@ export function digestInventoryItems(items: CopyItem[]): string {
     raw: item.source?.raw,
     representation: item.source?.representation,
     applicable: item.source?.applicable,
-  }))));
+  })) }));
 }
 
 /**

@@ -125,6 +125,9 @@ export function parseProposals(raw: string, config: LoopConfig): Proposal[] {
     out.push({
       id: str(p.id) || shortHash('llm', before, after),
       copyId: str(p.copyId),
+      catalogueKey: '',
+      sourceLocale: '',
+      scopeDigest: '',
       file: str(p.file),
       line: Number(p.line) || 0,
       kind: (str(p.kind) || 'unknown') as Proposal['kind'],

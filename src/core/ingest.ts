@@ -6,6 +6,7 @@ import type {
   Proposal,
   ProposalSet,
 } from '../types.js';
+import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
 import { shortHash } from '../util/fsx.js';
 import { applyGuardrails } from './guardrails.js';
 import { PRINCIPLES } from './psychology.js';
@@ -43,8 +44,11 @@ export function parseAgentOutput(raw: string, file = 'agent-output.json'): Agent
     throw new Error(`Invalid ${file}: expected an object`);
   }
   const object = value as Record<string, unknown>;
-  if (object.schemaVersion !== 4) {
-    throw new Error(`Invalid ${file}: schemaVersion must be 4`);
+  if (object.schemaVersion !== STATE_SCHEMA_VERSION) {
+    if (object.schemaVersion === STATE_SCHEMA_VERSION - 1) {
+      throw new Error(`Invalid ${file}: schema v4 may target code; schemaVersion must be 5`);
+    }
+    throw new Error(`Invalid ${file}: schemaVersion must be 5`);
   }
   if (typeof object.runId !== 'string' || !object.runId) {
     throw new Error(`Invalid ${file}: runId must be a non-empty string`);
@@ -57,7 +61,7 @@ export function parseAgentOutput(raw: string, file = 'agent-output.json'): Agent
   }
 
   return {
-    schemaVersion: 4,
+    schemaVersion: STATE_SCHEMA_VERSION,
     runId: object.runId,
     inventoryDigest: object.inventoryDigest,
     proposals: object.proposals.map((entry, index) => parseAgentProposal(entry, file, index)),
@@ -116,6 +120,14 @@ export function importAgentOutput(
   config: LoopConfig,
   author: 'agent' | 'llm' = 'agent',
 ): ImportResult {
+  if (
+    set.schemaVersion !== STATE_SCHEMA_VERSION ||
+    inventory.schemaVersion !== STATE_SCHEMA_VERSION ||
+    set.scopeDigest !== inventory.scopeDigest ||
+    set.sourceLocale !== inventory.sourceLocale
+  ) {
+    throw new Error(ACTIVE_STATE_SCHEMA_ERROR);
+  }
   const activeRun = set.runId ?? inventory.runId;
   const activeDigest = set.inventoryDigest ?? inventory.inventoryDigest;
   if (
@@ -167,6 +179,9 @@ export function importAgentOutput(
     const proposal: Proposal = {
       id: shortHash('proposal', activeRun, incoming.copyId, incoming.after, author),
       copyId: incoming.copyId,
+      catalogueKey: item.catalogueKey,
+      sourceLocale: item.sourceLocale,
+      scopeDigest: item.scopeDigest ?? inventory.scopeDigest,
       file: item.file,
       line: item.line,
       kind: item.kind,
@@ -197,7 +212,7 @@ export function importAgentOutput(
   return {
     set: {
       ...set,
-      schemaVersion: 4,
+      schemaVersion: STATE_SCHEMA_VERSION,
       runId: activeRun,
       inventoryDigest: activeDigest,
       proposals: linkSiblings([...retained, ...accepted]),

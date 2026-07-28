@@ -31,6 +31,9 @@ export type Surface = 'landing' | 'app' | 'email' | 'docs' | 'store' | 'legal' |
  */
 export const DEFAULT_SURFACES: Surface[] = ['landing', 'store', 'email', 'app'];
 
+export const STATE_SCHEMA_VERSION = 5 as const;
+export const ACTIVE_STATE_SCHEMA_ERROR = 'Active marketing state is schema v4 and may target code. Run `marketing-loop propose` to regenerate it.';
+
 export type SourceRepresentation =
   | 'plain'
   | 'html-text'
@@ -90,7 +93,9 @@ export interface CopyItem {
 }
 
 export interface Inventory {
-  schemaVersion: 4;
+  schemaVersion: 5;
+  scopeDigest: string;
+  sourceLocale: string;
   runId: string;
   inventoryDigest: string;
   generatedAt: string;
@@ -197,6 +202,10 @@ export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'applied' | '
 export interface Proposal {
   id: string;
   copyId: string;
+  /** Canonical source-catalogue identity reconstructed from the inventory. */
+  catalogueKey: string;
+  sourceLocale: string;
+  scopeDigest: string;
   file: string;
   line: number;
   kind: CopyKind;
@@ -239,9 +248,11 @@ export interface Proposal {
 }
 
 export interface ProposalSet {
-  schemaVersion?: 4;
-  runId?: string;
-  inventoryDigest?: string;
+  schemaVersion: 5;
+  scopeDigest: string;
+  sourceLocale: string;
+  runId: string;
+  inventoryDigest: string;
   generatedAt: string;
   product: string;
   proposals: Proposal[];
@@ -259,7 +270,7 @@ export interface AgentProposal {
 }
 
 export interface AgentOutput {
-  schemaVersion: 4;
+  schemaVersion: 5;
   runId: string;
   inventoryDigest: string;
   proposals: AgentProposal[];
@@ -275,7 +286,9 @@ export interface ProposalDecision {
 }
 
 export interface DecisionSet {
-  schemaVersion: 4;
+  schemaVersion: 5;
+  scopeDigest: string;
+  sourceLocale: string;
   runId: string;
   inventoryDigest: string;
   decisions: ProposalDecision[];

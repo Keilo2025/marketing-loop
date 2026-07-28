@@ -33,7 +33,7 @@ import { renderReport } from './core/report.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from './core/review.js';
 import { digestInventoryItems, scanRepo, summarise } from './core/scan.js';
 import { collectDecisionSet, rotateActiveRun } from './core/state.js';
-import { DEFAULT_SURFACES } from './types.js';
+import { ACTIVE_STATE_SCHEMA_ERROR, DEFAULT_SURFACES, STATE_SCHEMA_VERSION } from './types.js';
 import type {
   BehaviorReport,
   CopyFinding,
@@ -148,7 +148,9 @@ function runScan(cwd: string): ScanArtefacts {
   const scan = scanRepo(cwd, config);
   const { items } = scan;
   const inventory: Inventory = {
-    schemaVersion: 4,
+    schemaVersion: STATE_SCHEMA_VERSION,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
     generatedAt: new Date().toISOString(),
@@ -267,7 +269,9 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
 
   const { kept, blocked } = applyGuardrails(result.proposals, config);
   let set: ProposalSet = {
-    schemaVersion: 4,
+    schemaVersion: STATE_SCHEMA_VERSION,
+    scopeDigest: inventory.scopeDigest,
+    sourceLocale: inventory.sourceLocale,
     runId: inventory.runId,
     inventoryDigest: inventory.inventoryDigest,
     generatedAt: new Date().toISOString(),
@@ -296,7 +300,7 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
       try {
         const generated = await generateWithLlm(brief, config, config.maxProposals - set.proposals.length);
         const output = {
-          schemaVersion: 4 as const,
+          schemaVersion: STATE_SCHEMA_VERSION,
           runId: inventory.runId,
           inventoryDigest: inventory.inventoryDigest,
           proposals: generated.map((proposal) => ({
@@ -375,7 +379,9 @@ function cmdBrief(cwd: string): void {
   const result = propose({ items, findings, context, behavior, config, ranked });
   const { kept } = applyGuardrails(result.proposals, config);
   const set: ProposalSet = {
-    schemaVersion: 4,
+    schemaVersion: STATE_SCHEMA_VERSION,
+    scopeDigest: inventory.scopeDigest,
+    sourceLocale: inventory.sourceLocale,
     runId: inventory.runId,
     inventoryDigest: inventory.inventoryDigest,
     generatedAt: new Date().toISOString(),
@@ -400,7 +406,7 @@ function cmdBrief(cwd: string): void {
 function cmdImport(cwd: string): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const { set, inventory } = readActiveState(p);
+  const { set, inventory } = readActiveState(cwd, config, p);
   if (!exists(p.agentOutput)) {
     throw new Error(`${path.relative(cwd, p.agentOutput)} not found`);
   }
@@ -412,7 +418,7 @@ function cmdImport(cwd: string): void {
   for (const blocked of imported.blocked) log.warn(`${blocked.copyId} — ${blocked.reasons.join('; ')}`);
 }
 
-function readActiveState(p: ReturnType<typeof paths>): {
+function readActiveState(cwd: string, config: LoopConfig, p: ReturnType<typeof paths>): {
   set: ProposalSet;
   inventory: Inventory;
 } {
@@ -421,19 +427,28 @@ function readActiveState(p: ReturnType<typeof paths>): {
   const set = readJsonStrict<ProposalSet>(p.proposals);
   const inventory = readJsonStrict<Inventory>(p.inventory);
   if (
-    set.schemaVersion !== 4 ||
-    inventory.schemaVersion !== 4 ||
+    set.schemaVersion !== STATE_SCHEMA_VERSION ||
+    inventory.schemaVersion !== STATE_SCHEMA_VERSION ||
     !Array.isArray(set.proposals) ||
     !Array.isArray(inventory.items)
   ) {
-    throw new Error('State is not schema v4. Run `marketing-loop propose` to regenerate it.');
+    throw new Error(ACTIVE_STATE_SCHEMA_ERROR);
   }
   if (
     set.runId !== inventory.runId ||
     set.inventoryDigest !== inventory.inventoryDigest ||
-    digestInventoryItems(inventory.items) !== inventory.inventoryDigest
+    set.scopeDigest !== inventory.scopeDigest ||
+    set.sourceLocale !== inventory.sourceLocale ||
+    digestInventoryItems(inventory.items, inventory.scopeDigest, inventory.sourceLocale) !== inventory.inventoryDigest
   ) {
     throw new Error('Active proposal and inventory state do not match. Run `marketing-loop propose` again.');
+  }
+  const scope = resolveCatalogueScope(cwd, config);
+  if (
+    inventory.scopeDigest !== scope.scopeDigest ||
+    inventory.sourceLocale !== scope.sourceLocale
+  ) {
+    throw new Error('Active marketing state does not match the configured source catalogue. Run `marketing-loop propose` again.');
   }
   return { set, inventory };
 }
@@ -443,7 +458,7 @@ function readActiveState(p: ReturnType<typeof paths>): {
 async function cmdReview(cwd: string, flags: Flags): Promise<void> {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  let { set, inventory } = readActiveState(p);
+  let { set, inventory } = readActiveState(cwd, config, p);
 
   if (exists(p.agentOutput)) {
     const output = parseAgentOutput(fs.readFileSync(p.agentOutput, 'utf8'), p.agentOutput);
@@ -534,7 +549,7 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
 function cmdApply(cwd: string, flags: Flags): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const { set, inventory } = readActiveState(p);
+  const { set, inventory } = readActiveState(cwd, config, p);
   let decisions: DecisionSet;
 
   // A review.md left on disk with ticks in it is the human's latest word.

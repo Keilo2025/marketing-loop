@@ -86,6 +86,9 @@ export function propose(input: ProposeInput): ProposeOutput {
       proposals.push({
         id: shortHash('proposal', item.id, rewrite.after),
         copyId: item.id,
+        catalogueKey: item.catalogueKey,
+        sourceLocale: item.sourceLocale,
+        scopeDigest: item.scopeDigest ?? '',
         file: item.file,
         line: item.line,
         kind: item.kind,

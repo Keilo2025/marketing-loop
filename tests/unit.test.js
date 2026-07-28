@@ -34,6 +34,13 @@ import { hashText, readJsonStrict, walkDetailed, writeJson } from '../dist/util/
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, 'fixture');
 const config = { ...defaultConfig, exclude: defaultConfig.exclude.filter((e) => !/^tests?$/.test(e)) };
+const STATE_IDENTITY = {
+  schemaVersion: 5,
+  scopeDigest: 'scope-bound',
+  sourceLocale: 'en',
+  runId: 'run-bound',
+  inventoryDigest: 'inventory-bound',
+};
 
 function contextForFixture(items) {
   return buildMarketingContext(resolveCatalogueScope(FIXTURE, config), items, config);
@@ -373,7 +380,9 @@ function secureApplyState(tmp, changes, applyConfig = {
 }) {
   const scan = scanRepo(tmp, applyConfig, 'run-apply');
   const inventory = {
-    schemaVersion: 4,
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
     generatedAt: '',
@@ -390,13 +399,16 @@ function secureApplyState(tmp, changes, applyConfig = {
     assert.ok(item, `missing inventory item for ${change.file}: ${change.before}`);
     return {
       id: `secure-${index}`, copyId: item.id, file: item.file, line: item.line,
+      catalogueKey: item.catalogueKey, sourceLocale: item.sourceLocale, scopeDigest: item.scopeDigest,
       kind: item.kind, before: item.text, after: change.after, alternatives: [],
       rationale: 'Names the outcome.', problemSolved: 'The original was vague.',
       principles: [], evidence: [], confidence: 0.8, status: 'pending', author: 'engine',
     };
   });
   const set = {
-    schemaVersion: 4,
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
     generatedAt: '',
@@ -404,7 +416,9 @@ function secureApplyState(tmp, changes, applyConfig = {
     proposals,
   };
   const decisions = {
-    schemaVersion: 4,
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
     decisions: proposals.map((proposal) => ({
@@ -830,7 +844,7 @@ test('state writes are atomic and content hashes are stable', () => {
 
 test('starting a new scan archives and clears stale run artefacts', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-rotate-'));
-  writeJson(path.join(tmp, 'inventory.json'), { schemaVersion: 4, runId: 'old-run' });
+  writeJson(path.join(tmp, 'inventory.json'), { schemaVersion: 5, runId: 'old-run' });
   writeJson(path.join(tmp, 'agent-output.json'), { runId: 'old-run' });
   fs.writeFileSync(path.join(tmp, 'review.md'), 'old review');
 
@@ -929,7 +943,9 @@ test('agent output is canonicalized from inventory and cannot approve itself', (
   const item = scan.items.find((candidate) => candidate.text === 'No deployments found.');
   assert.ok(item);
   const inventory = {
-    schemaVersion: 4,
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
     generatedAt: '',
@@ -940,7 +956,9 @@ test('agent output is canonicalized from inventory and cannot approve itself', (
     items: scan.items,
   };
   const set = {
-    schemaVersion: 4,
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
     generatedAt: '',
@@ -948,7 +966,7 @@ test('agent output is canonicalized from inventory and cannot approve itself', (
     proposals: [],
   };
   const output = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
     proposals: [{
@@ -979,18 +997,18 @@ test('agent output is canonicalized from inventory and cannot approve itself', (
 
 test('agent output identity must match the active run', () => {
   const raw = JSON.stringify({
-    schemaVersion: 4,
+    schemaVersion: 5,
     runId: 'wrong-run',
     inventoryDigest: 'wrong-digest',
     proposals: [],
   });
   const parsed = parseAgentOutput(raw, 'agent-output.json');
   const set = {
-    schemaVersion: 4, runId: 'right-run', inventoryDigest: 'right-digest',
+    schemaVersion: 5, scopeDigest: 'scope-right', sourceLocale: 'en', runId: 'right-run', inventoryDigest: 'right-digest',
     generatedAt: '', product: 'test', proposals: [],
   };
   const inventory = {
-    schemaVersion: 4, runId: 'right-run', inventoryDigest: 'right-digest',
+    schemaVersion: 5, scopeDigest: 'scope-right', sourceLocale: 'en', runId: 'right-run', inventoryDigest: 'right-digest',
     generatedAt: '', repositoryRoot: FIXTURE, filesScanned: 0,
     filesWithCopy: 0, truncated: false, items: [],
   };
@@ -1019,16 +1037,16 @@ test('agent dark patterns are blocked during import before review', () => {
   const item = scan.items.find((candidate) => candidate.text === 'Submit');
   assert.ok(item);
   const inventory = {
-    schemaVersion: 4, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    schemaVersion: 5, scopeDigest: scan.scopeDigest, sourceLocale: scan.sourceLocale, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
     generatedAt: '', repositoryRoot: FIXTURE, filesScanned: scan.filesScanned,
     filesWithCopy: scan.filesWithCopy, truncated: false, items: scan.items,
   };
   const set = {
-    schemaVersion: 4, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    schemaVersion: 5, scopeDigest: scan.scopeDigest, sourceLocale: scan.sourceLocale, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
     generatedAt: '', product: 'test', proposals: [],
   };
   const output = {
-    schemaVersion: 4, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    schemaVersion: 5, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
     proposals: [{
       copyId: item.id,
       after: 'Last chance — offer ends tonight',
@@ -1055,7 +1073,7 @@ test('approval records are bound to the run, inventory, proposal, and final text
     principles: [], evidence: [], confidence: 0.8, status: 'pending', author: 'engine',
   };
   const set = {
-    schemaVersion: 4, runId: 'run-bound', inventoryDigest: 'inventory-bound',
+    ...STATE_IDENTITY,
     generatedAt: '', product: 'test', proposals: [proposal],
   };
   let markdown = renderReview(set);
@@ -1085,7 +1103,7 @@ test('a review file from another run is refused instead of silently reused', () 
     status: 'pending', author: 'engine',
   };
   const oldSet = {
-    schemaVersion: 4, runId: 'old-run', inventoryDigest: 'old-inventory',
+    ...STATE_IDENTITY, runId: 'old-run', inventoryDigest: 'old-inventory',
     generatedAt: '', product: 'test', proposals: [proposal],
   };
   const currentSet = {
@@ -1171,7 +1189,7 @@ test('canvas requires its launch token and writes digest-bound decisions', async
   }
 });
 
-test('schema v4 CLI completes scan, agent import, human review, and safe apply', () => {
+test('schema v5 CLI completes scan, agent import, human review, and safe apply', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-e2e-'));
   fs.cpSync(FIXTURE, tmp, { recursive: true });
   const cli = path.join(here, '..', 'dist', 'cli.js');
@@ -1188,14 +1206,14 @@ test('schema v4 CLI completes scan, agent import, human review, and safe apply',
     const out = path.join(tmp, '.marketing-loop');
     const inventory = readJsonStrict(path.join(out, 'inventory.json'));
     let set = readJsonStrict(path.join(out, 'proposals.json'));
-    assert.equal(inventory.schemaVersion, 4);
+    assert.equal(inventory.schemaVersion, 5);
     assert.equal(set.runId, inventory.runId);
     assert.equal(set.inventoryDigest, inventory.inventoryDigest);
 
     const item = inventory.items.find((candidate) => candidate.text === 'No deployments found.');
     assert.ok(item);
     writeJson(path.join(out, 'agent-output.json'), {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: inventory.runId,
       inventoryDigest: inventory.inventoryDigest,
       proposals: [{

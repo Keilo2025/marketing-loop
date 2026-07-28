@@ -20,10 +20,12 @@ import type {
   LoopConfig,
   ProposalSet,
 } from '../types.js';
+import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
 import { writeJson } from '../util/fsx.js';
 import { applyProposals } from './apply.js';
 import { PRINCIPLES } from './psychology.js';
 import { decisionSetFrom } from './state.js';
+import { resolveCatalogueScope } from './catalogue.js';
 
 export interface CanvasOptions {
   cwd: string;
@@ -40,6 +42,13 @@ export interface CanvasOptions {
 export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: () => void }> {
   const { set, proposalsPath, decisionsPath } = opts;
   assertSafeCanvasState(set, opts.inventory);
+  const scope = resolveCatalogueScope(opts.cwd, opts.config);
+  if (
+    opts.inventory.scopeDigest !== scope.scopeDigest ||
+    opts.inventory.sourceLocale !== scope.sourceLocale
+  ) {
+    throw new Error('active state does not match the configured source catalogue');
+  }
   const token = randomBytes(32).toString('hex');
 
   const currentLedger = (): DecisionSet => decisionSetFrom(
@@ -238,13 +247,16 @@ function sameToken(actual: string | undefined | null, expected: string): boolean
 
 function assertSafeCanvasState(set: ProposalSet, inventory: Inventory): void {
   if (
-    set.schemaVersion !== 4 ||
+    set.schemaVersion !== STATE_SCHEMA_VERSION ||
+    inventory.schemaVersion !== STATE_SCHEMA_VERSION ||
     !set.runId ||
     !set.inventoryDigest ||
     set.runId !== inventory.runId ||
-    set.inventoryDigest !== inventory.inventoryDigest
+    set.inventoryDigest !== inventory.inventoryDigest ||
+    set.scopeDigest !== inventory.scopeDigest ||
+    set.sourceLocale !== inventory.sourceLocale
   ) {
-    throw new Error('canvas requires a schema v4 proposal set and matching inventory');
+    throw new Error(ACTIVE_STATE_SCHEMA_ERROR);
   }
   const seen = new Set<string>();
   for (const proposal of set.proposals) {

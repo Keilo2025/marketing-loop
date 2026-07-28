@@ -6,6 +6,7 @@ import type {
   ProposalDecision,
   ProposalSet,
 } from '../types.js';
+import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
 import { exists, hashText, readJsonStrict, writeText } from '../util/fsx.js';
 import { collectReview, type Decision } from './review.js';
 
@@ -62,6 +63,9 @@ export function proposalDigest(proposal: Proposal, finalText: string): string {
   return hashText(JSON.stringify({
     id: proposal.id,
     copyId: proposal.copyId,
+    catalogueKey: proposal.catalogueKey,
+    sourceLocale: proposal.sourceLocale,
+    scopeDigest: proposal.scopeDigest,
     file: proposal.file,
     line: proposal.line,
     kind: proposal.kind,
@@ -120,9 +124,11 @@ export function decisionSetFrom(
   }
 
   return {
-    schemaVersion: 4,
-    runId: set.runId as string,
-    inventoryDigest: set.inventoryDigest as string,
+    schemaVersion: STATE_SCHEMA_VERSION,
+    scopeDigest: set.scopeDigest,
+    sourceLocale: set.sourceLocale,
+    runId: set.runId,
+    inventoryDigest: set.inventoryDigest,
     decisions: recorded,
   };
 }
@@ -133,6 +139,12 @@ export function decisionSetFrom(
  */
 export function validateDecisionSet(set: ProposalSet, ledger: DecisionSet): string[] {
   const errors: string[] = [];
+  if (
+    set.schemaVersion !== STATE_SCHEMA_VERSION ||
+    ledger.schemaVersion !== STATE_SCHEMA_VERSION ||
+    ledger.scopeDigest !== set.scopeDigest ||
+    ledger.sourceLocale !== set.sourceLocale
+  ) errors.push(ACTIVE_STATE_SCHEMA_ERROR);
   if (!set.runId || ledger.runId !== set.runId) errors.push('decision runId does not match the active run');
   if (!set.inventoryDigest || ledger.inventoryDigest !== set.inventoryDigest) {
     errors.push('decision inventory digest does not match the active inventory');
@@ -160,7 +172,16 @@ export function validateDecisionSet(set: ProposalSet, ledger: DecisionSet): stri
 
 function requireIdentity(
   set: ProposalSet,
-): asserts set is ProposalSet & { runId: string; inventoryDigest: string } {
+): void {
+  if (
+    set.schemaVersion !== STATE_SCHEMA_VERSION ||
+    !set.scopeDigest ||
+    !set.sourceLocale ||
+    !set.runId ||
+    !set.inventoryDigest
+  ) {
+    throw new Error(ACTIVE_STATE_SCHEMA_ERROR);
+  }
   if (!set.runId || !set.inventoryDigest) {
     throw new Error('proposal set is missing its run identity');
   }
