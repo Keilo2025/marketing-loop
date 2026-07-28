@@ -77,6 +77,7 @@ function parseArgs(argv: string[]): Flags {
 
 async function main(): Promise<void> {
   const flags = parseArgs(process.argv.slice(2));
+  if (flags.version) return void console.log(VERSION);
   const command = flags._[0] ?? 'help';
   const cwd = typeof flags.cwd === 'string' ? path.resolve(flags.cwd) : process.cwd();
 
@@ -777,6 +778,7 @@ ${c.bold('marketing-loop')} ${c.grey('v' + VERSION)}
 
   Reads the configured source catalogue, diagnoses copy, and ships nothing
   until a human approves it.
+  Reads and writes only source-catalogue messages; never accesses application code or target locales.
 
 ${c.bold('Commands')}
 

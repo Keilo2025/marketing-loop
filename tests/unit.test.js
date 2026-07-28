@@ -567,7 +567,15 @@ test('CLI copy and installed rules describe the catalogue-only handoff', () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const help = result.stdout;
   assert.match(help, /source messages|source catalogue/i);
+  assert.match(help, /reads and writes only source-catalogue messages; never accesses application code or target locales/i);
   assert.doesNotMatch(help, /reads your code|write approved changes to your code/i);
+
+  for (const args of [['version'], ['--version']]) {
+    const version = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8' });
+    assert.equal(version.status, 0, version.stderr || version.stdout);
+    assert.match(version.stdout, /^0\.5\.0\s*$/);
+    assert.doesNotMatch(version.stdout, /marketing-loop v|Commands/);
+  }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-install-lifecycle-'));
   try {
