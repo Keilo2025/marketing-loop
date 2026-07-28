@@ -12,7 +12,7 @@ import {
   type CopyFinding,
   type CopyItem,
   type LoopConfig,
-  type ProductModel,
+  type MarketingContext,
   type Surface,
 } from '../types.js';
 
@@ -26,7 +26,7 @@ interface Rule {
 }
 
 interface RuleContext {
-  product: ProductModel;
+  context: MarketingContext;
   config: LoopConfig;
 }
 
@@ -213,10 +213,10 @@ function escape(s: string): string {
 
 export function analyse(
   items: CopyItem[],
-  product: ProductModel,
+  context: MarketingContext,
   config: LoopConfig,
 ): CopyFinding[] {
-  const ctx: RuleContext = { product, config };
+  const ctx: RuleContext = { context, config };
   const findings: CopyFinding[] = [];
 
   for (const item of items) {

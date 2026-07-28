@@ -1,8 +1,8 @@
 /**
  * The deterministic proposal engine.
  *
- * This engine will only make a change it can justify from text already present
- * in the repo. It never invents a number, a customer, a guarantee or an
+ * This engine will only make a change it can justify from the configured
+ * source catalogue. It never invents a number, a customer, a guarantee or an
  * outcome. That restraint is the whole reason it can be trusted to run
  * unattended in someone's CI.
  *
@@ -17,7 +17,7 @@ import type {
   CopyFinding,
   CopyItem,
   LoopConfig,
-  ProductModel,
+  MarketingContext,
   Proposal,
 } from '../types.js';
 import { shortHash } from '../util/fsx.js';
@@ -45,7 +45,7 @@ const HYPE_DELETIONS =
 export interface ProposeInput {
   items: CopyItem[];
   findings: CopyFinding[];
-  product: ProductModel;
+  context: MarketingContext;
   behavior: BehaviorReport;
   config: LoopConfig;
   /** Ranked copy items — proposals are generated in this order. */
@@ -80,7 +80,7 @@ export function propose(input: ProposeInput): ProposeOutput {
     if (!itemFindings.length) continue;
 
     const evidence = buildEvidence(item, itemFindings, behavior);
-    const rewrite = safeRewrite(item, items, input.product, itemFindings);
+    const rewrite = safeRewrite(item, items, input.context, itemFindings);
 
     if (rewrite && rewrite.after !== item.text && proposals.length < engineBudget) {
       proposals.push({
@@ -131,13 +131,13 @@ interface Rewrite {
 function safeRewrite(
   item: CopyItem,
   all: CopyItem[],
-  product: ProductModel,
+  context: MarketingContext,
   findings: CopyFinding[],
 ): Rewrite | null {
   const rules = new Set(findings.map((f) => f.rule));
 
   if (rules.has('generic-cta')) {
-    const rewrite = rewriteGenericCta(item, all, product);
+    const rewrite = rewriteGenericCta(item, all, context);
     if (rewrite) return rewrite;
   }
 
@@ -182,9 +182,9 @@ function safeRewrite(
 function rewriteGenericCta(
   item: CopyItem,
   all: CopyItem[],
-  product: ProductModel,
+  context: MarketingContext,
 ): Rewrite | null {
-  const noun = nearestOutcomeNoun(item, all, product);
+  const noun = nearestOutcomeNoun(item, all, context);
   if (!noun) return null;
 
   const primary = `Get my ${noun}`;
@@ -216,10 +216,12 @@ function rewriteGenericCta(
 function nearestOutcomeNoun(
   item: CopyItem,
   all: CopyItem[],
-  product: ProductModel,
+  context: MarketingContext,
 ): string | null {
+  const namespace = item.catalogueKey.split('.')[0] || item.file;
   const headings = all.filter(
-    (i) => i.file === item.file && ['headline', 'subhead'].includes(i.kind),
+    (i) => (i.catalogueKey.split('.')[0] || i.file) === namespace
+      && ['headline', 'subhead'].includes(i.kind),
   );
 
   const above = headings
@@ -234,7 +236,7 @@ function nearestOutcomeNoun(
     if (noun) return noun;
   }
 
-  return product.tagline ? deliverableNoun(product.tagline) : null;
+  return context.currentTagline ? deliverableNoun(context.currentTagline) : null;
 }
 
 /** Nouns that name a thing the reader walks away holding. */
@@ -409,10 +411,10 @@ function takesAn(word: string): boolean {
 function askFor(item: CopyItem, findings: CopyFinding[]): string {
   const rules = findings.map((f) => f.rule);
   if (rules.includes('feature-not-benefit')) {
-    return `Rewrite so it names the situation the reader is in and the situation they end up in. Do not describe the machinery. Use only capabilities proven by the code.`;
+    return `Rewrite so it names the situation the reader is in and the situation they end up in. Use only source-catalogue text, allowed claims, or marketing-data points.`;
   }
   if (rules.includes('no-problem-named')) {
-    return `Name the specific problem this removes. If you cannot find the problem in the code or the product model, say so instead of guessing.`;
+    return `Name the specific problem this removes. If source-catalogue text, allowed claims, and marketing-data points do not establish it, ask a NEEDS-FACT question.`;
   }
   if (rules.includes('unhelpful-error')) {
     return `Add the recovery path: what the user should do next, in the same sentence. Keep the failure statement short.`;
@@ -421,13 +423,13 @@ function askFor(item: CopyItem, findings: CopyFinding[]): string {
     return `Replace the description of emptiness with the single first action, and say how long it takes.`;
   }
   if (rules.includes('no-specificity')) {
-    return `Add one checkable fact. Pull it from the codebase, the README or marketing-loop.config.json allowedClaims. If none exists, flag it as a fact the human needs to supply.`;
+    return `Add one checkable fact from source-catalogue text, an allowed claim, or marketing-data. If none exists, flag the fact the human needs to supply.`;
   }
   if (rules.includes('generic-cta')) {
     return `Name what the reader receives when they click. Take the deliverable from the surrounding page copy — do not invent one.`;
   }
   if (rules.includes('no-risk-reversal')) {
-    return `If — and only if — the product genuinely has a free tier, trial without a card, or easy cancellation, add it as a short second clause.`;
+    return `Add a short second clause only when the source catalogue or an allowed claim establishes a free tier, trial without a card, or easy cancellation.`;
   }
   return `Rewrite to fix: ${findings.map((f) => f.rule).join(', ')}.`;
 }

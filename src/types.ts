@@ -302,6 +302,23 @@ export interface CatalogueScope extends CatalogueConfig {
   scopeDigest: string;
 }
 
+/**
+ * Marketing facts that are safe to use in analysis, proposals, and briefs.
+ * This is intentionally derived only from the configured source catalogue,
+ * marketing-loop.config.json, and marketing-data/.
+ */
+export interface MarketingContext {
+  sourceLocale: string;
+  messagesDir: string;
+  layout: CatalogueLayout;
+  namespaces: string[];
+  currentTagline?: string;
+  currentDescription?: string;
+  audience: string;
+  allowedClaims: string[];
+  generatedAt: string;
+}
+
 export interface LoopConfig {
   /** Directories to scan for copy; they do not define catalogue scope. */
   include: string[];

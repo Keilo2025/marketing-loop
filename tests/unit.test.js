@@ -15,11 +15,13 @@ import { applyGuardrails } from '../dist/core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from '../dist/core/ingest.js';
 import { AGENT_TARGETS, install, uninstall } from '../dist/core/install.js';
 import { buildProductModel } from '../dist/core/product.js';
+import { buildMarketingContext } from '../dist/core/context.js';
 import { fixArticles, propose } from '../dist/core/propose.js';
 import { PRINCIPLES } from '../dist/core/psychology.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from '../dist/core/review.js';
 import { linkSiblings, localeOf, siblingGroups } from '../dist/core/siblings.js';
 import { scanRepo } from '../dist/core/scan.js';
+import { resolveCatalogueScope } from '../dist/core/catalogue.js';
 import {
   collectDecisionSet,
   proposalDigest,
@@ -32,6 +34,10 @@ import { hashText, readJsonStrict, walkDetailed, writeJson } from '../dist/util/
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, 'fixture');
 const config = { ...defaultConfig, exclude: defaultConfig.exclude.filter((e) => !/^tests?$/.test(e)) };
+
+function contextForFixture(items) {
+  return buildMarketingContext(resolveCatalogueScope(FIXTURE, config), items, config);
+}
 
 /* ------------------------------------------------------------- extraction */
 
@@ -93,8 +99,8 @@ test('infers stack, routes and integrations from the repo', () => {
 
 test('diagnoses the usual copy failures', () => {
   const { items } = scanRepo(FIXTURE, config);
-  const product = buildProductModel(FIXTURE, config);
-  const findings = analyse(items, product, config);
+  const context = contextForFixture(items);
+  const findings = analyse(items, context, config);
   const rules = new Set(findings.map((f) => f.rule));
 
   assert.ok(rules.has('generic-cta'), 'flags Submit / Get Started');
@@ -107,8 +113,8 @@ test('diagnoses the usual copy failures', () => {
 
 test('prioritisation puts ctas and headlines first', () => {
   const { items } = scanRepo(FIXTURE, config);
-  const product = buildProductModel(FIXTURE, config);
-  const findings = analyse(items, product, config);
+  const context = contextForFixture(items);
+  const findings = analyse(items, context, config);
   const ranked = prioritise(items, findings, []);
 
   assert.ok(ranked.length > 0);
@@ -142,12 +148,12 @@ test('reads the data directory and derives problems', () => {
 
 test('rewrites a generic cta using a deliverable from the same page', () => {
   const { items } = scanRepo(FIXTURE, config);
-  const product = buildProductModel(FIXTURE, config);
-  const findings = analyse(items, product, config);
+  const context = contextForFixture(items);
+  const findings = analyse(items, context, config);
   const ranked = prioritise(items, findings, []);
   const behavior = loadBehavior(path.join(FIXTURE, 'marketing-data'), items);
 
-  const { proposals, openItems } = propose({ items, findings, product, behavior, config, ranked });
+  const { proposals, openItems } = propose({ items, findings, context, behavior, config, ranked });
 
   const cta = proposals.find((p) => p.before === 'Submit' && p.file.endsWith('page.jsx'));
   assert.ok(cta, 'produced a proposal for the audit page Submit button');
@@ -166,11 +172,11 @@ test('rewrites a generic cta using a deliverable from the same page', () => {
 
 test('the engine never introduces a number that was not already there', () => {
   const { items } = scanRepo(FIXTURE, config);
-  const product = buildProductModel(FIXTURE, config);
-  const findings = analyse(items, product, config);
+  const context = contextForFixture(items);
+  const findings = analyse(items, context, config);
   const ranked = prioritise(items, findings, []);
   const behavior = loadBehavior(path.join(FIXTURE, 'marketing-data'), items);
-  const { proposals } = propose({ items, findings, product, behavior, config, ranked });
+  const { proposals } = propose({ items, findings, context, behavior, config, ranked });
 
   for (const p of proposals) {
     const newDigits = (p.after.match(/\d+/g) ?? []).filter((d) => !p.before.includes(d));
@@ -193,11 +199,11 @@ test('the company-flip refuses to orphan a pronoun', () => {
     id: 'x', file: 'a.html', line: 1, text: 'We help teams monitor their deployments.',
     kind: 'subhead', surface: 'landing', context: [], length: 40,
   }];
-  const product = { name: 't', stack: [], routes: [], features: [], audienceHints: [], pricingTiers: [], integrations: [], generatedAt: '' };
+  const context = { sourceLocale: 'en', messagesDir: 'messages', layout: 'single-file', namespaces: [], audience: '', allowedClaims: [], generatedAt: '' };
   const findings = [{ copyId: 'x', rule: 'company-centric', severity: 'high', message: '', suggests: [] }];
   const behavior = { signals: [], funnel: [], notes: [], problems: [], sourceFiles: [] };
 
-  const { proposals, openItems } = propose({ items, findings, product, behavior, config, ranked: items });
+  const { proposals, openItems } = propose({ items, findings, context, behavior, config, ranked: items });
 
   assert.equal(proposals.length, 0, '"Monitor their deployments" would leave a dangling "their"');
   assert.equal(openItems.length, 1, 'it becomes a job for a model with judgement');
@@ -625,11 +631,11 @@ test('the proposal cap covers open items too, and never starves them', () => {
     kind: 'subhead', surface: 'landing', context: [], length: 50,
   }));
   const findings = items.map((i) => ({ copyId: i.id, rule: 'hype-vocabulary', severity: 'high', message: '', suggests: [] }));
-  const product = { name: 't', stack: [], routes: [], features: [], audienceHints: [], pricingTiers: [], integrations: [], generatedAt: '' };
+  const context = { sourceLocale: 'en', messagesDir: 'messages', layout: 'single-file', namespaces: [], audience: '', allowedClaims: [], generatedAt: '' };
   const behavior = { signals: [], funnel: [], notes: [], problems: [], sourceFiles: [] };
 
   const capped = { ...config, maxProposals: 10 };
-  const { proposals, openItems } = propose({ items, findings, product, behavior, config: capped, ranked: items });
+  const { proposals, openItems } = propose({ items, findings, context, behavior, config: capped, ranked: items });
 
   assert.ok(proposals.length <= 6, `engine took ${proposals.length}, should cap at 60% of 10`);
   assert.ok(

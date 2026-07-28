@@ -11,6 +11,7 @@ export { analyse, findingsFor, prioritise } from './core/analyse.js';
 export { applyProposals, revert } from './core/apply.js';
 export { behaviorSubjects, loadBehavior, parseDelimited } from './core/behavior.js';
 export { renderBrief } from './core/brief.js';
+export { buildMarketingContext } from './core/context.js';
 export { serveCanvas } from './core/canvas.js';
 export { extractFromFile, inferSurface, looksLikeCopy, SCANNABLE } from './core/extract.js';
 export {
@@ -42,7 +43,6 @@ export {
   type InstallResult,
 } from './core/install.js';
 export { detectProvider, generateWithLlm, parseProposals } from './core/llm.js';
-export { buildProductModel, looksLikeProject } from './core/product.js';
 export { propose, type ProposeInput, type ProposeOutput } from './core/propose.js';
 export {
   getPrinciple,

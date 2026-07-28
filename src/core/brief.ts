@@ -13,13 +13,13 @@ import type {
   CopyFinding,
   CopyItem,
   LoopConfig,
-  ProductModel,
+  MarketingContext,
 } from '../types.js';
 import type { ProposeOutput } from './propose.js';
 import { principleCheatSheet } from './psychology.js';
 
 export interface BriefInput {
-  product: ProductModel;
+  context: MarketingContext;
   items: CopyItem[];
   findings: CopyFinding[];
   behavior: BehaviorReport;
@@ -31,13 +31,13 @@ export interface BriefInput {
 }
 
 export function renderBrief(input: BriefInput): string {
-  const { product, findings, behavior, config, proposed, items } = input;
+  const { context, findings, behavior, config, proposed, items } = input;
   const s: string[] = [];
 
   s.push('# Marketing loop brief');
   s.push('');
   s.push(
-    `Generated ${new Date().toISOString()} by \`marketing-loop\`. Everything below was read out of this repository and the files in \`${config.dataDir}/\`. Nothing here is invented.`,
+    `Generated ${new Date().toISOString()} by \`marketing-loop\`. Everything below comes from the configured source catalogue, marketing-loop.config.json, and marketing-data/. Application code was not read.`,
   );
   s.push('');
   s.push('---');
@@ -54,43 +54,26 @@ export function renderBrief(input: BriefInput): string {
   s.push('');
   s.push('Rules that are not negotiable:');
   s.push('');
-  s.push('1. **You may not invent a fact.** No user counts, no percentages, no customer names, no guarantees, no timings — unless they appear in this brief, in `allowedClaims`, or in the code. If a line needs a fact you do not have, write the rewrite with the fact missing and put the question in `evidence` as `NEEDS-FACT: ...`.');
+  s.push('1. **You may not invent a fact.** No user counts, no percentages, no customer names, no guarantees, no timings — unless they appear in this brief or in `allowedClaims`. If a line needs a fact you do not have, write the rewrite with the fact missing and put the question in `evidence` as `NEEDS-FACT: ...`.');
   s.push('2. **No dark patterns.** Fake urgency, fake scarcity, confirmshaming, hidden billing and invented social proof are rejected automatically by the guardrails and will not reach the human.');
   s.push('3. **One idea per string.** If a headline is carrying two ideas, propose the split.');
   s.push('4. **Do not touch behaviour.** Copy only. No component restructuring, no new props, no logic changes.');
   s.push('5. **Every proposal needs a rationale a human will agree with**, naming the principle and the reason it applies *here*.');
   s.push('');
 
-  /* --------------------------------------------------------- the product */
-  s.push('## What this product actually does');
+  /* ------------------------------------------------------ source context */
+  s.push('## Source catalogue context');
   s.push('');
-  s.push(`- **Name:** ${product.name}`);
-  if (product.tagline) s.push(`- **Current tagline:** ${product.tagline}`);
-  if (product.description) s.push(`- **Description:** ${product.description}`);
-  if (product.stack.length) s.push(`- **Stack:** ${product.stack.join(', ')}`);
-  if (product.integrations.length) s.push(`- **Integrations found in dependencies:** ${product.integrations.join(', ')}`);
-  if (product.pricingTiers.length) s.push(`- **Pricing tiers in code:** ${product.pricingTiers.join(', ')}`);
-  if (product.audienceHints.length) s.push(`- **Audience signals:** ${product.audienceHints.join('; ')}`);
-  if (config.audience) s.push(`- **Audience (configured):** ${config.audience}`);
+  s.push(`- **Source locale:** ${context.sourceLocale}`);
+  s.push(`- **Catalogue directory:** ${context.messagesDir}`);
+  s.push(`- **Catalogue layout:** ${context.layout}`);
+  s.push(`- **Namespaces:** ${context.namespaces.length ? context.namespaces.join(', ') : '—'}`);
+  s.push(`- **Audience:** ${context.audience || '—'}`);
+  if (context.currentTagline) s.push(`- **Current tagline:** ${context.currentTagline}`);
+  if (context.currentDescription) s.push(`- **Current description:** ${context.currentDescription}`);
+  s.push(`- **Voice:** ${config.voice.tone}`);
+  s.push(`- **Allowed claims:** ${context.allowedClaims.length ? context.allowedClaims.join('; ') : '—'}`);
   s.push('');
-
-  if (product.routes.length) {
-    s.push(`- **Routes (${product.routes.length}):** ${product.routes.slice(0, 25).map((r) => `\`${r}\``).join(' ')}`);
-    s.push('');
-  }
-
-  if (product.features.length) {
-    s.push('### Capabilities inferred from the code');
-    s.push('');
-    s.push('The evidence column is the proof this feature exists. Sell the *consequence* of each one, not the one itself.');
-    s.push('');
-    s.push('| capability | evidence in repo |');
-    s.push('| --- | --- |');
-    for (const feature of product.features.slice(0, 20)) {
-      s.push(`| ${feature.name} | ${feature.evidence.slice(0, 3).map((e) => `\`${e}\``).join(', ')} |`);
-    }
-    s.push('');
-  }
 
   /* -------------------------------------------------------- the evidence */
   s.push('## What the behavioural data says');
@@ -149,7 +132,7 @@ export function renderBrief(input: BriefInput): string {
   s.push('## Open items');
   s.push('');
   s.push(
-    `${proposed.openItems.length} strings need a rewrite the deterministic engine would not attempt, because doing it well requires judgement about the product. These are yours.`,
+    `${proposed.openItems.length} strings need a rewrite the deterministic engine would not attempt, because doing it well requires judgement about the audience and catalogue context. These are yours.`,
   );
   s.push('');
 
@@ -223,7 +206,7 @@ export function renderBrief(input: BriefInput): string {
             rationale: '<why this wins, for a human, naming the mechanism>',
             problemSolved: '<the reader problem this now solves>',
             principles: ['outcome-framing', 'specificity'],
-            evidence: ['<code fact, data point, or NEEDS-FACT: question>'],
+            evidence: ['<source-catalogue text, allowed claim, marketing-data point, or NEEDS-FACT question>'],
             confidence: 0.8,
           },
         ],

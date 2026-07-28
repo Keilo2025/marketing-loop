@@ -15,6 +15,8 @@ import { analyse, prioritiseDetailed } from './core/analyse.js';
 import { applyProposals, revert } from './core/apply.js';
 import { behaviorSubjects, loadBehavior } from './core/behavior.js';
 import { renderBrief } from './core/brief.js';
+import { resolveCatalogueScope } from './core/catalogue.js';
+import { buildMarketingContext } from './core/context.js';
 import { serveCanvas } from './core/canvas.js';
 import { applyGuardrails } from './core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from './core/ingest.js';
@@ -26,7 +28,6 @@ import {
   uninstall as uninstallAgents,
 } from './core/install.js';
 import { detectProvider, generateWithLlm } from './core/llm.js';
-import { buildProductModel } from './core/product.js';
 import { propose } from './core/propose.js';
 import { renderReport } from './core/report.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from './core/review.js';
@@ -40,7 +41,7 @@ import type {
   DecisionSet,
   Inventory,
   LoopConfig,
-  ProductModel,
+  MarketingContext,
   ProposalSet,
 } from './types.js';
 import { exists, readJsonStrict, writeJson, writeText } from './util/fsx.js';
@@ -106,11 +107,7 @@ function cmdInit(cwd: string, flags: Flags): void {
     return;
   }
 
-  const product = buildProductModel(cwd, defaultConfig);
-  const config = {
-    ...defaultConfig,
-    audience: product.audienceHints.slice(0, 3).join(', '),
-  };
+  const config = { ...defaultConfig };
   saveConfig(cwd, config);
 
   const dataDir = path.join(cwd, config.dataDir);
@@ -135,7 +132,8 @@ function cmdInit(cwd: string, flags: Flags): void {
 interface ScanArtefacts {
   inventory: Inventory;
   items: CopyItem[];
-  product: ProductModel;
+  context: MarketingContext;
+  catalogueFiles: string[];
   findings: CopyFinding[];
   behavior: BehaviorReport;
   ranked: CopyItem[];
@@ -160,9 +158,10 @@ function runScan(cwd: string): ScanArtefacts {
     truncated: scan.truncated,
     items,
   };
-  const product = buildProductModel(cwd, config);
+  const scope = resolveCatalogueScope(cwd, config);
+  const context = buildMarketingContext(scope, items, config);
   const behavior = loadBehavior(p.data, items);
-  const findings = analyse(items, product, config);
+  const findings = analyse(items, context, config);
   const { ranked, outOfScope } = prioritiseDetailed(
     items,
     findings,
@@ -171,11 +170,21 @@ function runScan(cwd: string): ScanArtefacts {
   );
 
   writeJson(p.inventory, inventory);
-  writeJson(p.product, product);
+  // Deprecated filename retained for one release for external consumers.
+  writeJson(p.product, context);
   writeJson(p.findings, findings);
   writeJson(p.behavior, behavior);
 
-  return { inventory, items, product, findings, behavior, ranked, outOfScope };
+  return {
+    inventory,
+    items,
+    context,
+    catalogueFiles: scope.files,
+    findings,
+    behavior,
+    ranked,
+    outOfScope,
+  };
 }
 
 /** Tell the human what was deliberately left alone, and how to change that. */
@@ -201,19 +210,20 @@ function cmdScan(cwd: string, flags: Flags): void {
   const p = paths(cwd, config);
   log.step('Scanning…');
 
-  const { items, product, findings, behavior, ranked, outOfScope } = runScan(cwd);
+  const { items, context, catalogueFiles, findings, behavior, ranked, outOfScope } = runScan(cwd);
   const counts = summarise(items);
 
   log.blank();
-  log.title(product.name);
+  log.title('Source catalogue');
   table([
     ['strings found', String(items.length)],
     ['by kind', Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join(' · ')],
-    ['capabilities', product.features.slice(0, 6).map((f) => f.name).join(', ') || '—'],
-    ['routes', String(product.routes.length)],
+    ['source locale', context.sourceLocale],
+    ['catalogue files', catalogueFiles.join(', ') || '—'],
+    ['namespaces', context.namespaces.join(', ') || '—'],
     ['findings', `${findings.length} across ${new Set(findings.map((f) => f.copyId)).size} strings`],
     ['worth rewriting', String(ranked.length)],
-    ['behaviour data', behavior.sourceFiles.length ? behavior.sourceFiles.join(', ') : c.yellow(`none — drop exports in ${config.dataDir}/`)],
+    ['behavior sources', behavior.sourceFiles.length ? behavior.sourceFiles.join(', ') : c.yellow(`none — drop exports in ${config.dataDir}/`)],
   ]);
 
   if (behavior.problems.length) {
@@ -250,10 +260,10 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
   if (typeof flags.max === 'string') config.maxProposals = Number(flags.max) || config.maxProposals;
 
   log.step('Scanning…');
-  const { inventory, items, product, findings, behavior, ranked, outOfScope } = runScan(cwd);
+  const { inventory, items, context, findings, behavior, ranked, outOfScope } = runScan(cwd);
 
   log.step('Proposing…');
-  const result = propose({ items, findings, product, behavior, config, ranked });
+  const result = propose({ items, findings, context, behavior, config, ranked });
 
   const { kept, blocked } = applyGuardrails(result.proposals, config);
   let set: ProposalSet = {
@@ -261,11 +271,11 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
     runId: inventory.runId,
     inventoryDigest: inventory.inventoryDigest,
     generatedAt: new Date().toISOString(),
-    product: product.name,
+    product: context.currentTagline ?? 'source catalogue',
     proposals: linkSiblings(kept),
   };
   const brief = renderBrief({
-    product,
+    context,
     items,
     findings,
     behavior,
@@ -361,20 +371,20 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
 function cmdBrief(cwd: string): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const { inventory, items, product, findings, behavior, ranked } = runScan(cwd);
-  const result = propose({ items, findings, product, behavior, config, ranked });
+  const { inventory, items, context, findings, behavior, ranked } = runScan(cwd);
+  const result = propose({ items, findings, context, behavior, config, ranked });
   const { kept } = applyGuardrails(result.proposals, config);
   const set: ProposalSet = {
     schemaVersion: 4,
     runId: inventory.runId,
     inventoryDigest: inventory.inventoryDigest,
     generatedAt: new Date().toISOString(),
-    product: product.name,
+    product: context.currentTagline ?? 'source catalogue',
     proposals: linkSiblings(kept),
   };
   writeJson(p.proposals, set);
   writeText(p.brief, renderBrief({
-    product,
+    context,
     items,
     findings,
     behavior,
@@ -721,8 +731,8 @@ function cmdHelp(): void {
   console.log(`
 ${c.bold('marketing-loop')} ${c.grey('v' + VERSION)}
 
-  Reads your code, works out what the product actually solves, rewrites the
-  copy to sell that, and ships nothing until a human approves it.
+  Reads the configured source catalogue, diagnoses copy, and ships nothing
+  until a human approves it.
 
 ${c.bold('Commands')}
 
