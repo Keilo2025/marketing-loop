@@ -150,20 +150,32 @@ test('apply changes only the source catalogue', () => {
 
 test('apply rejects a forged runId before creating a backup outside backupDir', () => {
   const state = approvedCatalogueState();
+  const forgedRunId = '../../../../escaped-run';
+  const options = state.options();
+  const timestampPrefix = new Date().toISOString().replace(/[:.]/g, '-');
+  const vulnerableRunDir = path.join(
+    options.backupDir,
+    `${timestampPrefix}-${forgedRunId}`,
+  );
   try {
-    const forgedRunId = '../../../../escaped-run';
     state.set.runId = forgedRunId;
     state.inventory.runId = forgedRunId;
     state.decisions.runId = forgedRunId;
-    const escaped = path.join(state.cwd, 'escaped-run');
+    const relativeEscape = path.relative(options.backupDir, vulnerableRunDir);
+    assert.ok(
+      relativeEscape === '..' || relativeEscape.startsWith(`..${path.sep}`),
+      `pre-fix run path must escape backupDir, got ${relativeEscape}`,
+    );
+    assert.equal(fs.existsSync(vulnerableRunDir), false);
 
-    const results = applyProposals(state.set, state.options());
+    const results = applyProposals(state.set, options);
 
     assert.equal(results[0].ok, false);
     assert.match(results[0].reason, /unsafe runId/i);
-    assert.equal(fs.existsSync(escaped), false);
+    assert.equal(fs.existsSync(vulnerableRunDir), false);
     assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), state.originalSource);
   } finally {
+    fs.rmSync(vulnerableRunDir, { recursive: true, force: true });
     fs.rmSync(state.cwd, { recursive: true, force: true });
   }
 });
