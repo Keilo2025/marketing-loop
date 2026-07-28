@@ -199,6 +199,7 @@ export function paths(cwd: string, config: LoopConfig) {
     brief: path.join(out, 'brief.md'),
     agentOutput: path.join(out, 'agent-output.json'),
     proposals: path.join(out, 'proposals.json'),
+    handoff: path.join(out, 'handoff.json'),
     review: path.join(out, 'review.md'),
     applied: path.join(out, 'applied.json'),
     decisions: path.join(out, 'decisions.json'),

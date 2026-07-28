@@ -1121,6 +1121,7 @@ test('canvas requires its launch token and writes digest-bound decisions', async
   }]);
   state.set.proposals[0].id = 'deadbeef';
   const decisionsPath = path.join(tmp, '.marketing-loop', 'decisions.json');
+  const stateChanges = [];
   const canvas = await serveCanvas({
     cwd: tmp,
     config: state.applyConfig,
@@ -1130,6 +1131,7 @@ test('canvas requires its launch token and writes digest-bound decisions', async
     decisionsPath,
     backupDir: path.join(tmp, '.marketing-loop', 'backups'),
     port: 0,
+    onStateChanged: (set, inventory) => stateChanges.push({ status: set.proposals[0].status, inventory }),
   });
 
   try {
@@ -1168,6 +1170,7 @@ test('canvas requires its launch token and writes digest-bound decisions', async
       body: JSON.stringify({ id: 'deadbeef', status: 'approved', edited: 'Run my audit' }),
     });
     assert.equal(decided.status, 200);
+    assert.deepEqual(stateChanges, [{ status: 'approved', inventory: state.inventory }]);
 
     const ledger = readJsonStrict(decisionsPath);
     assert.equal(ledger.runId, state.set.runId);

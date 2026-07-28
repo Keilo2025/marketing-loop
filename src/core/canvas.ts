@@ -36,6 +36,7 @@ export interface CanvasOptions {
   decisionsPath: string;
   backupDir: string;
   port: number;
+  onStateChanged?: (set: ProposalSet, inventory: Inventory) => void;
   onApplied?: (results: ApplyResult[]) => void;
 }
 
@@ -116,6 +117,7 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
         }
         writeJson(proposalsPath, set);
         writeJson(decisionsPath, currentLedger());
+        opts.onStateChanged?.(set, opts.inventory);
         return json(res, 200, { ok: true, proposal });
       });
     }
@@ -152,6 +154,7 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
 
         writeJson(proposalsPath, set);
         writeJson(decisionsPath, currentLedger());
+        opts.onStateChanged?.(set, opts.inventory);
         return json(res, 200, { ok: true, changed, proposals: set.proposals });
       });
     }
@@ -170,6 +173,7 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
           dryRun: Boolean(dryRun),
         });
         writeJson(proposalsPath, set);
+        opts.onStateChanged?.(set, opts.inventory);
         if (!dryRun) opts.onApplied?.(results);
         return json(res, 200, { results });
       });

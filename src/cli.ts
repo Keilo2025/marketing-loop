@@ -18,6 +18,7 @@ import { renderBrief } from './core/brief.js';
 import { resolveCatalogueScope } from './core/catalogue.js';
 import { buildMarketingContext } from './core/context.js';
 import { serveCanvas } from './core/canvas.js';
+import { writeHandoff } from './core/handoff.js';
 import { applyGuardrails } from './core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from './core/ingest.js';
 import { linkSiblings, siblingGroups } from './core/siblings.js';
@@ -326,7 +327,7 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
     }
   }
 
-  writeJson(p.proposals, set);
+  persistProposalState(cwd, config, set, inventory);
   writeText(p.brief, brief);
 
   log.blank();
@@ -388,7 +389,7 @@ function cmdBrief(cwd: string): void {
     product: context.currentTagline ?? 'source catalogue',
     proposals: linkSiblings(kept),
   };
-  writeJson(p.proposals, set);
+  persistProposalState(cwd, config, set, inventory);
   writeText(p.brief, renderBrief({
     context,
     items,
@@ -412,7 +413,7 @@ function cmdImport(cwd: string): void {
   }
   const output = parseAgentOutput(fs.readFileSync(p.agentOutput, 'utf8'), p.agentOutput);
   const imported = importAgentOutput(set, inventory, output, config);
-  writeJson(p.proposals, imported.set);
+  persistProposalState(cwd, config, imported.set, inventory);
   log.ok(`${imported.accepted} agent proposal${imported.accepted === 1 ? '' : 's'} imported`);
   for (const rejected of imported.rejected) log.warn(`${rejected.copyId ?? `entry ${rejected.index}`} — ${rejected.reason}`);
   for (const blocked of imported.blocked) log.warn(`${blocked.copyId} — ${blocked.reasons.join('; ')}`);
@@ -453,6 +454,17 @@ function readActiveState(cwd: string, config: LoopConfig, p: ReturnType<typeof p
   return { set, inventory };
 }
 
+function persistProposalState(
+  cwd: string,
+  config: LoopConfig,
+  set: ProposalSet,
+  inventory: Inventory,
+): void {
+  const p = paths(cwd, config);
+  writeJson(p.proposals, set);
+  writeHandoff(p.handoff, set, inventory, resolveCatalogueScope(cwd, config));
+}
+
 /* ----------------------------------------------------------------- review */
 
 async function cmdReview(cwd: string, flags: Flags): Promise<void> {
@@ -464,7 +476,7 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
     const output = parseAgentOutput(fs.readFileSync(p.agentOutput, 'utf8'), p.agentOutput);
     const imported = importAgentOutput(set, inventory, output, config);
     set = imported.set;
-    writeJson(p.proposals, set);
+    persistProposalState(cwd, config, set, inventory);
     if (imported.accepted) log.ok(`${imported.accepted} agent proposal${imported.accepted === 1 ? '' : 's'} imported`);
     for (const rejected of imported.rejected) log.warn(`${rejected.copyId ?? `entry ${rejected.index}`} — ${rejected.reason}`);
     for (const blocked of imported.blocked) log.warn(`${blocked.copyId} — ${blocked.reasons.join('; ')}`);
@@ -486,8 +498,8 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
     const collected = collectReview(markdown);
     const decisions = collectDecisionSet(set, markdown);
     const { set: updated, fannedOut } = foldDecisions(set, collected);
-    writeJson(p.proposals, updated);
     writeJson(p.decisions, decisions);
+    persistProposalState(cwd, config, updated, inventory);
 
     const approved = updated.proposals.filter((x) => x.status === 'approved').length;
     const rejected = updated.proposals.filter((x) => x.status === 'rejected').length;
@@ -520,6 +532,9 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
       decisionsPath: p.decisions,
       backupDir: p.backups,
       port,
+      onStateChanged: (changed, activeInventory) => {
+        writeHandoff(p.handoff, changed, activeInventory, resolveCatalogueScope(cwd, config));
+      },
       onApplied: (results) => {
         writeJson(p.applied, results);
         writeText(p.report, renderReport(set, results));
@@ -559,6 +574,7 @@ function cmdApply(cwd: string, flags: Flags): void {
     decisions = collectDecisionSet(set, markdown);
     set.proposals = applyDecisions(set, collected).proposals;
     writeJson(p.decisions, decisions);
+    persistProposalState(cwd, config, set, inventory);
   } else if (exists(p.decisions)) {
     decisions = readJsonStrict<DecisionSet>(p.decisions);
   } else {
@@ -586,7 +602,7 @@ function cmdApply(cwd: string, flags: Flags): void {
   const bad = results.filter((r) => !r.ok);
 
   if (!dryRun) {
-    writeJson(p.proposals, set);
+    persistProposalState(cwd, config, set, inventory);
     writeJson(p.applied, results);
     writeText(p.report, renderReport(set, results));
   }

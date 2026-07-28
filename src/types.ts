@@ -322,6 +322,23 @@ export interface CatalogueScope extends CatalogueConfig {
   scopeDigest: string;
 }
 
+export interface HandoffEntry {
+  key: string;
+  file: string;
+  sourceHash: string;
+  status: 'pending' | 'approved';
+}
+
+export interface MarketingHandoff {
+  schemaVersion: 1;
+  marketingRunId: string;
+  scopeDigest: string;
+  messagesDir: string;
+  sourceLocale: string;
+  layout: CatalogueLayout;
+  unresolved: HandoffEntry[];
+}
+
 /**
  * Marketing facts that are safe to use in analysis, proposals, and briefs.
  * This is intentionally derived only from the configured source catalogue,

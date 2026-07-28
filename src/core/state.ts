@@ -18,6 +18,7 @@ const RUN_FILES = [
   'brief.md',
   'agent-output.json',
   'proposals.json',
+  'handoff.json',
   'review.md',
   'decisions.json',
   'applied.json',

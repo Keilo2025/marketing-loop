@@ -13,6 +13,7 @@ export { behaviorSubjects, loadBehavior, parseDelimited } from './core/behavior.
 export { renderBrief } from './core/brief.js';
 export { buildMarketingContext } from './core/context.js';
 export { serveCanvas } from './core/canvas.js';
+export { deriveHandoff, writeHandoff } from './core/handoff.js';
 export { extractFromFile, inferSurface, looksLikeCopy, SCANNABLE } from './core/extract.js';
 export {
   extractCatalogueFile,
