@@ -10,6 +10,17 @@ interface ParsedString {
   end: number;
 }
 
+const COPY_ATTRS = new Set([
+  'placeholder', 'alt', 'title', 'aria-label', 'arialabel', 'label',
+  'heading', 'headline', 'subtitle', 'subheading', 'description', 'tagline',
+  'cta', 'ctatext', 'buttontext', 'buttonlabel', 'submitlabel', 'emptytext',
+  'helptext', 'hint', 'tooltip', 'confirmtext', 'canceltext', 'successmessage',
+  'errormessage', 'value',
+]);
+
+const TAILWIND_HINT =
+  /^(sm:|md:|lg:|xl:|2xl:|hover:|focus:|active:|dark:|group-|peer-)?(flex|grid|block|inline|hidden|absolute|relative|fixed|sticky|text-|bg-|border|rounded|p[xytblr]?-|m[xytblr]?-|w-|h-|min-|max-|gap-|space-|items-|justify-|font-|leading-|tracking-|shadow|opacity-|z-|overflow-|transition|duration-|ease-|cursor-|select-|whitespace-|truncate|container|mx-auto|col-|row-|order-|aspect-|object-|ring-|divide-|backdrop-|animate-)/;
+
 const tokens = (key: string): string[] =>
   key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[._\s-]+/).filter(Boolean);
 
@@ -78,6 +89,35 @@ export function extractCatalogueFile(
       },
     };
   });
+}
+
+/**
+ * Reject code-like strings when callers need to filter candidate catalogue
+ * values without parsing an application source file.
+ */
+export function looksLikeCopy(text: string, attr?: string): boolean {
+  const t = text.trim();
+  if (t.length < 2 || t.length > 300) return false;
+  if (!/[a-zA-Z]/.test(t)) return false;
+  if (/[{}<>$`]|=>|\/\/|\*\/|::/.test(t)) return false;
+  if (/^(https?:\/\/|\/|\.\/|\.\.\/|#|@|data:|mailto:)/.test(t)) return false;
+  if (/^[\w.-]+\.(png|jpe?g|svg|gif|webp|css|js|ts|tsx|json|woff2?)$/i.test(t)) return false;
+  if (/^[A-Z0-9_]{2,}$/.test(t)) return false;
+  if (/^[a-z]+(?:[A-Z][a-z0-9]*)+$/.test(t)) return false;
+  if (/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(t)) return false;
+
+  const words = t.split(/\s+/);
+  if (words.length >= 2 && words.every((word) => TAILWIND_HINT.test(word))) return false;
+  if (words.length >= 3 && words.filter((word) => TAILWIND_HINT.test(word)).length / words.length > 0.6) {
+    return false;
+  }
+
+  if (words.length === 1) {
+    const singleWordOk = attr ? COPY_ATTRS.has(attr) : /^[A-Z][a-z]{2,}$/.test(t);
+    if (!singleWordOk || t.length < 3) return false;
+  }
+
+  return words.some((word) => /[aeiouAEIOU]/.test(word) && word.length >= 2);
 }
 
 function hasAny(parts: Set<string>, candidates: string[]): boolean {

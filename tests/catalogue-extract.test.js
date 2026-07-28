@@ -12,6 +12,14 @@ import {
 import { resolveCatalogueScope } from '../dist/core/catalogue.js';
 import { digestInventoryItems, scanRepo } from '../dist/core/scan.js';
 
+test('public API exposes catalogue extraction without code extractors', async () => {
+  const api = await import('../dist/index.js');
+  assert.equal(typeof api.extractCatalogueFile, 'function');
+  assert.equal('buildProductModel' in api, false);
+  assert.equal('SCANNABLE' in api, false);
+  assert.equal('extractFromFile' in api, false);
+});
+
 test('catalogue extraction preserves canonical keys and exact JSON spans', () => {
   const content = '{\n  "hero": {\n    "headline": "Deploy with confidence",\n    "cta": "Start free"\n  }\n}\n';
   const scope = {

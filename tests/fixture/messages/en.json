@@ -12,5 +12,9 @@
     "action": "Submit",
     "emptyState": "No deployments found.",
     "errorMessage": "Something went wrong. Error code 500."
+  },
+  "pricing": {
+    "plan": "Professional",
+    "description": "Monitor every deployment from one place."
   }
 }

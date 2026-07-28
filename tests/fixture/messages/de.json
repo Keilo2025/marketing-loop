@@ -1,0 +1,20 @@
+{
+  "landing": {
+    "headline": "Ihr Dashboard für Bereitstellungen",
+    "subhead": "Behalten Sie Ihre Bereitstellungen im Blick.",
+    "cta": "Jetzt starten",
+    "description": "Erkennen Sie Probleme, bevor sie Ihren Release bremsen.",
+    "headlineLong": "Überwachen Sie Bereitstellungen für Ihr Engineering-Team"
+  },
+  "audit": {
+    "headline": "Ihr kostenloser Bereitstellungs-Audit",
+    "subhead": "Wir analysieren Ihre letzten Bereitstellungen.",
+    "action": "Absenden",
+    "emptyState": "Keine Bereitstellungen gefunden.",
+    "errorMessage": "Etwas ist schiefgelaufen. Fehlercode 500."
+  },
+  "pricing": {
+    "plan": "Professional",
+    "description": "Überwachen Sie jede Bereitstellung an einem Ort."
+  }
+}

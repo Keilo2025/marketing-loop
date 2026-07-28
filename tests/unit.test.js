@@ -10,11 +10,10 @@ import { analyse, prioritise, prioritiseDetailed } from '../dist/core/analyse.js
 import { applyProposals } from '../dist/core/apply.js';
 import { loadBehavior, parseDelimited } from '../dist/core/behavior.js';
 import { serveCanvas } from '../dist/core/canvas.js';
-import { extractFromFile, inferSurface, looksLikeCopy } from '../dist/core/extract.js';
+import { inferSurfaceFromKey, looksLikeCopy } from '../dist/core/catalogue-extract.js';
 import { applyGuardrails } from '../dist/core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from '../dist/core/ingest.js';
 import { AGENT_TARGETS, install, uninstall } from '../dist/core/install.js';
-import { buildProductModel } from '../dist/core/product.js';
 import { buildMarketingContext } from '../dist/core/context.js';
 import { fixArticles, propose } from '../dist/core/propose.js';
 import { PRINCIPLES } from '../dist/core/psychology.js';
@@ -60,46 +59,6 @@ test('looksLikeCopy accepts sentences and rejects code', () => {
   assert.equal(looksLikeCopy('./components/Button'), false);
   assert.equal(looksLikeCopy('user-profile-card'), false);
   assert.equal(looksLikeCopy('logo.svg'), false);
-});
-
-test('extracts headline, cta and meta from html', () => {
-  const html = fs.readFileSync(path.join(FIXTURE, 'index.html'), 'utf8');
-  const items = extractFromFile('index.html', html);
-  const texts = items.map((i) => i.text);
-
-  assert.ok(texts.some((t) => t.startsWith('A powerful deployment monitoring dashboard')));
-  assert.ok(items.some((i) => i.kind === 'headline'));
-  assert.ok(items.some((i) => i.kind === 'cta' && i.text === 'Get Started'));
-  assert.ok(items.some((i) => i.kind === 'meta' && i.text.includes('revolutionary')));
-
-  // Class attributes must never be mistaken for copy.
-  assert.equal(texts.some((t) => t.includes('flex flex-col')), false);
-  assert.equal(texts.some((t) => t.includes('rounded-lg')), false);
-});
-
-test('extracts named copy constants from jsx', () => {
-  const jsx = fs.readFileSync(path.join(FIXTURE, 'src/app/audit/page.jsx'), 'utf8');
-  const items = extractFromFile('src/app/audit/page.jsx', jsx);
-  const byText = new Map(items.map((i) => [i.text, i]));
-
-  assert.ok(byText.has('No deployments found.'));
-  assert.equal(byText.get('No deployments found.').kind, 'empty-state');
-  assert.ok(byText.has('Something went wrong. Error code 500.'));
-  assert.equal(byText.get('Something went wrong. Error code 500.').kind, 'error');
-  assert.equal(byText.get('Submit').kind, 'cta');
-});
-
-/* ------------------------------------------------------------ product model */
-
-test('infers stack, routes and integrations from the repo', () => {
-  const product = buildProductModel(FIXTURE, config);
-
-  assert.equal(product.name, 'deploywatch');
-  assert.ok(product.stack.includes('Next.js'));
-  assert.ok(product.stack.includes('Stripe billing'));
-  assert.ok(product.integrations.includes('stripe'));
-  assert.ok(product.routes.includes('/audit'));
-  assert.ok(product.audienceHints.includes('engineering teams'));
 });
 
 /* ----------------------------------------------------------------- analysis */
@@ -288,10 +247,11 @@ test('review markdown round-trips approvals and edits', () => {
 
 /* --------------------------------------------------------------------- apply */
 
-test('legacy proposal status flags cannot authorize source writes', () => {
+test('legacy proposal status flags cannot authorize catalogue writes', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-'));
-  const file = 'page.html';
-  fs.writeFileSync(path.join(tmp, file), '<h1>Old headline</h1>\n<button>Submit</button>\n');
+  const file = 'messages/en.json';
+  fs.mkdirSync(path.join(tmp, 'messages'));
+  fs.writeFileSync(path.join(tmp, file), '{"headline":"Old headline","cta":"Submit"}\n');
 
   const set = {
     generatedAt: new Date().toISOString(),
@@ -604,21 +564,14 @@ test('AGENTS.md section installs and strips cleanly around existing content', ()
 
 /* ----------------------------------------------------------------- surfaces */
 
-test('legal and internal paths are recognised before anything else', () => {
-  assert.equal(inferSurface('legal/terms.md'), 'legal');
-  assert.equal(inferSurface('app/(marketing)/privacy-policy/page.tsx'), 'legal');
-  assert.equal(inferSurface('src/pages/cookie-policy.tsx'), 'legal');
-  assert.equal(inferSurface('content/gdpr.mdx'), 'legal');
-  // A legal page about pricing is still a legal page.
-  assert.equal(inferSurface('legal/pricing-terms.md'), 'legal');
-
-  assert.equal(inferSurface('.github/PULL_REQUEST_TEMPLATE.md'), 'internal');
-  assert.equal(inferSurface('CHANGELOG.md'), 'internal');
-  assert.equal(inferSurface('docs/adr/0001-use-postgres.md'), 'internal');
-
-  assert.equal(inferSurface('docs/getting-started.md'), 'docs');
-  assert.equal(inferSurface('src/app/(marketing)/page.tsx'), 'landing');
-  assert.equal(inferSurface('src/app/dashboard/page.tsx'), 'app');
+test('catalogue keys classify legal and product surfaces before generic app copy', () => {
+  assert.equal(inferSurfaceFromKey('legal.terms.heading'), 'legal');
+  assert.equal(inferSurfaceFromKey('privacy.policy.description'), 'legal');
+  assert.equal(inferSurfaceFromKey('cookie.banner.accept'), 'legal');
+  assert.equal(inferSurfaceFromKey('landing.hero.headline'), 'landing');
+  assert.equal(inferSurfaceFromKey('pricing.plan.cta'), 'landing');
+  assert.equal(inferSurfaceFromKey('newsletter.subject'), 'email');
+  assert.equal(inferSurfaceFromKey('account.settings.heading'), 'app');
 });
 
 test('out-of-scope surfaces are counted and held back, not silently dropped', () => {
@@ -870,27 +823,6 @@ test('empty configured claims cannot bypass factual guardrails', () => {
 
   assert.throws(() => loadConfig(tmp), /allowedClaims.*non-empty/i);
   fs.rmSync(tmp, { recursive: true, force: true });
-});
-
-test('inventory preserves normalized text and exact multiline source', () => {
-  const source = '<h1>Hello\n    world &amp; friends</h1>';
-  const [item] = extractFromFile('page.html', source);
-
-  assert.equal(item.text, 'Hello world & friends');
-  assert.equal(item.source.raw, 'Hello\n    world &amp; friends');
-  assert.equal(source.slice(item.source.start, item.source.end), item.source.raw);
-  assert.equal(item.source.representation, 'html-text');
-});
-
-test('JavaScript string inventory keeps escapes in the span but decodes review text', () => {
-  const source = "const cta = 'Get your team\\'s deployment audit';\n";
-  const item = extractFromFile('copy.js', source).find((candidate) => candidate.kind === 'cta');
-
-  assert.ok(item);
-  assert.equal(item.text, "Get your team's deployment audit");
-  assert.equal(item.source.raw, "Get your team\\'s deployment audit");
-  assert.equal(source.slice(item.source.start, item.source.end), item.source.raw);
-  assert.equal(item.source.representation, 'js-string-single');
 });
 
 test('scan uses the configured source catalogue and records file hashes', () => {
