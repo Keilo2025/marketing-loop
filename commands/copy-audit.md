@@ -12,6 +12,6 @@ If language-loop is available, run `language-loop scan` and `language-loop extra
 npx marketing-loop@latest scan
 ```
 
-Read `.marketing-loop/findings.json`, `.marketing-loop/inventory.json`, `.marketing-loop/brief.md`, and `.marketing-loop/behavior.json`. Report the source-catalogue strings costing the most, recurring diagnostic patterns, and unanswered facts. Ground every claim in the catalogue, approved claims, marketing data, or the brief.
+Read `.marketing-loop/findings.json`, `.marketing-loop/inventory.json`, `.marketing-loop/behavior.json`, and `marketing-loop.config.json` when present. Report the source-catalogue strings costing the most, recurring diagnostic patterns, and unanswered facts. Ground every claim in the catalogue, approved claims, marketing data, or scan findings.
 
 State that source edits make translations stale and that language-loop translates only after marketing decisions are final. Offer `/marketing-loop` for rewrites; never offer to modify target locales.

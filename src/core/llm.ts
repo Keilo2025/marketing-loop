@@ -7,8 +7,8 @@
  * in without a human present. The approval gate still applies afterwards.
  */
 
-import type { LoopConfig, Proposal } from '../types.js';
-import { shortHash } from '../util/fsx.js';
+import type { AgentProposal, LoopConfig } from '../types.js';
+import { parseAgentProposals } from './ingest.js';
 
 export type Provider = 'anthropic' | 'openai' | 'none';
 
@@ -43,7 +43,7 @@ export async function generateWithLlm(
   brief: string,
   config: LoopConfig,
   limit: number,
-): Promise<Proposal[]> {
+): Promise<AgentProposal[]> {
   const { provider, key, model } = detectProvider();
   if (provider === 'none' || !key) {
     throw new Error(
@@ -101,7 +101,7 @@ async function callOpenai(key: string, model: string, prompt: string): Promise<s
   return data.choices[0]?.message.content ?? '';
 }
 
-export function parseProposals(raw: string, config: LoopConfig): Proposal[] {
+export function parseProposals(raw: string, config: LoopConfig): AgentProposal[] {
   const json = extractJson(raw);
   if (!json) return [];
 
@@ -112,41 +112,10 @@ export function parseProposals(raw: string, config: LoopConfig): Proposal[] {
     return [];
   }
 
-  const list = Array.isArray(parsed.proposals) ? parsed.proposals : [];
-  const out: Proposal[] = [];
-
-  for (const entry of list) {
-    if (!entry || typeof entry !== 'object') continue;
-    const p = entry as Record<string, unknown>;
-    const before = str(p.before);
-    const after = str(p.after);
-    if (!before || !after || before === after) continue;
-
-    out.push({
-      id: str(p.id) || shortHash('llm', before, after),
-      copyId: str(p.copyId),
-      catalogueKey: '',
-      sourceLocale: '',
-      scopeDigest: '',
-      file: str(p.file),
-      line: Number(p.line) || 0,
-      kind: (str(p.kind) || 'unknown') as Proposal['kind'],
-      before,
-      after,
-      alternatives: Array.isArray(p.alternatives) ? p.alternatives.map(str).filter(Boolean) : [],
-      rationale: str(p.rationale),
-      problemSolved: str(p.problemSolved),
-      principles: Array.isArray(p.principles) ? p.principles.map(str).filter(Boolean) : [],
-      evidence: Array.isArray(p.evidence) ? p.evidence.map(str).filter(Boolean) : [],
-      confidence: clamp(Number(p.confidence)),
-      status: 'pending',
-      author: 'llm',
-    });
-
-    if (out.length >= config.maxProposals) break;
-  }
-
-  return out;
+  return parseAgentProposals(
+    Array.isArray(parsed.proposals) ? parsed.proposals : [],
+    'API-model output',
+  ).slice(0, config.maxProposals);
 }
 
 function extractJson(raw: string): string | null {
@@ -156,13 +125,4 @@ function extractJson(raw: string): string | null {
   const end = candidate.lastIndexOf('}');
   if (start === -1 || end === -1 || end <= start) return null;
   return candidate.slice(start, end + 1);
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
-
-function clamp(n: number): number {
-  if (!Number.isFinite(n)) return 0.5;
-  return Math.max(0, Math.min(1, n));
 }

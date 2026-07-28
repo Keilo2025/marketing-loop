@@ -9,12 +9,14 @@ import { applyProposals, revert } from '../dist/core/apply.js';
 import { digestInventoryItems, scanRepo } from '../dist/core/scan.js';
 import { proposalDigest } from '../dist/core/state.js';
 
-function approvedCatalogueState() {
+function approvedCatalogueState({
+  originalSource = '{"cta":"Start my audit"}\n',
+  after = 'Run my audit',
+} = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-catalogue-apply-'));
   const sourceFile = path.join(cwd, 'messages', 'en.json');
   const germanFile = path.join(cwd, 'messages', 'de.json');
   const codeFile = path.join(cwd, 'src', 'page.tsx');
-  const originalSource = '{"cta":"Start my audit"}\n';
   const originalGerman = '{"cta":"Mein Audit starten"}\n';
   const originalCode = 'export const cta = "Start my audit";\n';
   fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
@@ -60,7 +62,7 @@ function approvedCatalogueState() {
     line: item.line,
     kind: item.kind,
     before: item.text,
-    after: 'Run my audit',
+    after,
     alternatives: [],
     rationale: 'Names the action.',
     problemSolved: 'The original was vague.',
@@ -149,6 +151,47 @@ test('apply changes only the source catalogue and leaves German target bytes unt
   }
 });
 
+test('apply enforces configured surfaces from the canonical catalogue key', () => {
+  const state = approvedCatalogueState({
+    originalSource: '{"legal":{"terms":{"heading":"Terms apply"}}}\n',
+    after: 'Terms that are easier to understand',
+  });
+  try {
+    const item = state.inventory.items[0];
+    assert.equal(item.catalogueKey, 'legal.terms.heading');
+    assert.equal(item.surface, 'legal');
+
+    // A tampered display field must not reclassify a canonical legal key.
+    item.surface = 'app';
+    state.inventory.inventoryDigest = digestInventoryItems(
+      state.inventory.items,
+      state.inventory.scopeDigest,
+      state.inventory.sourceLocale,
+    );
+    state.set.inventoryDigest = state.inventory.inventoryDigest;
+    state.decisions.inventoryDigest = state.inventory.inventoryDigest;
+
+    let results = applyProposals(state.set, state.options());
+    assert.equal(results[0].ok, false);
+    assert.match(results[0].reason, /surface legal.*not configured/i);
+    assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), state.originalSource);
+
+    results = applyProposals(state.set, {
+      ...state.options(),
+      config: {
+        ...state.config,
+        surfaces: [...state.config.surfaces, 'legal'],
+      },
+    });
+    assert.equal(results[0].ok, true, results[0].reason);
+    assert.deepEqual(JSON.parse(fs.readFileSync(state.sourceFile, 'utf8')), {
+      legal: { terms: { heading: 'Terms that are easier to understand' } },
+    });
+  } finally {
+    fs.rmSync(state.cwd, { recursive: true, force: true });
+  }
+});
+
 test('apply rejects a forged runId before creating a backup outside backupDir', () => {
   const state = approvedCatalogueState();
   const forgedRunId = '../../../../escaped-run';
@@ -196,6 +239,7 @@ test('apply rejects a backup directory with an existing symlink component', () =
 
     assert.equal(results[0].ok, false);
     assert.match(results[0].reason, /backup directory.*symbolic link/i);
+    assert.equal(state.set.proposals[0].status, 'failed');
     assert.deepEqual(fs.readdirSync(externalBackups), []);
     assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), state.originalSource);
   } finally {

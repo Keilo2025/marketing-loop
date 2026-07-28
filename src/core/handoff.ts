@@ -5,7 +5,10 @@ import type {
   MarketingHandoff,
   ProposalSet,
 } from '../types.js';
+import { STATE_SCHEMA_VERSION } from '../types.js';
 import { hashText, writeJson } from '../util/fsx.js';
+import { isCatalogueTarget } from './catalogue.js';
+import { digestInventoryItems } from './scan.js';
 
 /** Derive a portable list of unresolved source-catalogue keys for a consumer. */
 export function deriveHandoff(
@@ -13,16 +16,31 @@ export function deriveHandoff(
   inventory: Inventory,
   scope: CatalogueScope,
 ): MarketingHandoff {
+  assertHandoffIdentity(set, inventory, scope);
   const items = new Map(inventory.items.map((item) => [item.id, item]));
+  for (const proposal of set.proposals) {
+    const item = items.get(proposal.copyId);
+    if (!item) {
+      throw new Error(`proposal ${proposal.id} cannot resolve to an active catalogue item`);
+    }
+    if (
+      proposal.catalogueKey !== item.catalogueKey ||
+      proposal.file !== item.file ||
+      proposal.sourceLocale !== item.sourceLocale ||
+      proposal.scopeDigest !== (item.scopeDigest ?? inventory.scopeDigest) ||
+      proposal.line !== item.line ||
+      proposal.kind !== item.kind ||
+      proposal.before !== item.text
+    ) {
+      throw new Error(`proposal ${proposal.id} target does not match its active catalogue item`);
+    }
+  }
   const unresolved: HandoffEntry[] = set.proposals
     .filter((proposal): proposal is typeof proposal & { status: HandoffEntry['status'] } =>
       proposal.status === 'pending' || proposal.status === 'approved',
     )
     .map((proposal) => {
-      const item = items.get(proposal.copyId);
-      if (!item) {
-        throw new Error(`proposal ${proposal.id} cannot resolve to an active catalogue item`);
-      }
+      const item = items.get(proposal.copyId)!;
       return {
         key: item.catalogueKey,
         file: item.file,
@@ -41,6 +59,63 @@ export function deriveHandoff(
     layout: scope.layout,
     unresolved,
   };
+}
+
+function assertHandoffIdentity(
+  set: ProposalSet,
+  inventory: Inventory,
+  scope: CatalogueScope,
+): void {
+  if (
+    set.schemaVersion !== STATE_SCHEMA_VERSION ||
+    inventory.schemaVersion !== STATE_SCHEMA_VERSION
+  ) {
+    throw new Error('marketing handoff requires schema v5 proposal and inventory state');
+  }
+  if (set.runId !== inventory.runId) {
+    throw new Error('marketing handoff proposal runId does not match the inventory');
+  }
+  if (set.inventoryDigest !== inventory.inventoryDigest) {
+    throw new Error('marketing handoff proposal inventory digest does not match the inventory');
+  }
+  if (
+    set.scopeDigest !== inventory.scopeDigest ||
+    inventory.scopeDigest !== scope.scopeDigest
+  ) {
+    throw new Error('marketing handoff scope digest does not match the active state and resolved catalogue');
+  }
+  if (
+    set.sourceLocale !== inventory.sourceLocale ||
+    inventory.sourceLocale !== scope.sourceLocale
+  ) {
+    throw new Error('marketing handoff source locale does not match the active state and resolved catalogue');
+  }
+  if (
+    digestInventoryItems(
+      inventory.items,
+      inventory.scopeDigest,
+      inventory.sourceLocale,
+    ) !== inventory.inventoryDigest
+  ) {
+    throw new Error('marketing handoff inventory digest does not match its contents');
+  }
+
+  const itemIds = new Set<string>();
+  for (const item of inventory.items) {
+    if (itemIds.has(item.id)) {
+      throw new Error(`marketing handoff inventory contains duplicate copy id ${item.id}`);
+    }
+    itemIds.add(item.id);
+    if (
+      item.sourceLocale !== inventory.sourceLocale ||
+      (item.scopeDigest ?? inventory.scopeDigest) !== inventory.scopeDigest
+    ) {
+      throw new Error(`inventory item ${item.id} identity does not match the active inventory`);
+    }
+    if (!isCatalogueTarget(scope, item.file)) {
+      throw new Error(`inventory item ${item.id} is outside the resolved source catalogue`);
+    }
+  }
 }
 
 /** Atomically replace the consumer handoff with the active review state. */

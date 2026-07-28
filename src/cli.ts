@@ -18,7 +18,7 @@ import { renderBrief } from './core/brief.js';
 import { resolveCatalogueScope } from './core/catalogue.js';
 import { buildMarketingContext } from './core/context.js';
 import { serveCanvas } from './core/canvas.js';
-import { writeHandoff } from './core/handoff.js';
+import { deriveHandoff, writeHandoff } from './core/handoff.js';
 import { applyGuardrails } from './core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from './core/ingest.js';
 import { linkSiblings, siblingGroups } from './core/siblings.js';
@@ -32,7 +32,11 @@ import { detectProvider, generateWithLlm } from './core/llm.js';
 import { propose } from './core/propose.js';
 import { renderReport } from './core/report.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from './core/review.js';
-import { digestInventoryItems, scanRepo, summarise } from './core/scan.js';
+import {
+  digestInventoryItems,
+  scanResolvedCatalogue,
+  summarise,
+} from './core/scan.js';
 import { collectDecisionSet, rotateActiveRun } from './core/state.js';
 import { ACTIVE_STATE_SCHEMA_ERROR, DEFAULT_SURFACES, STATE_SCHEMA_VERSION } from './types.js';
 import type {
@@ -154,24 +158,23 @@ function runScan(cwd: string): ScanArtefacts {
   warnDeprecatedScopeOptions(cwd);
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  rotateActiveRun(p.out);
-
-  const scan = scanRepo(cwd, config);
+  const scope = resolveCatalogueScope(cwd, config);
+  const scan = scanResolvedCatalogue(cwd, scope);
   const { items } = scan;
+  const generatedAt = new Date().toISOString();
   const inventory: Inventory = {
     schemaVersion: STATE_SCHEMA_VERSION,
     scopeDigest: scan.scopeDigest,
     sourceLocale: scan.sourceLocale,
     runId: scan.runId,
     inventoryDigest: scan.inventoryDigest,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     repositoryRoot: cwd,
     filesScanned: scan.filesScanned,
     filesWithCopy: scan.filesWithCopy,
     truncated: scan.truncated,
     items,
   };
-  const scope = resolveCatalogueScope(cwd, config);
   const context = buildMarketingContext(scope, items, config);
   const behavior = loadBehavior(p.data, items);
   const findings = analyse(items, context, config);
@@ -181,12 +184,27 @@ function runScan(cwd: string): ScanArtefacts {
     behaviorSubjects(behavior),
     config.surfaces ?? DEFAULT_SURFACES,
   );
+  const emptySet: ProposalSet = {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    scopeDigest: inventory.scopeDigest,
+    sourceLocale: inventory.sourceLocale,
+    runId: inventory.runId,
+    inventoryDigest: inventory.inventoryDigest,
+    generatedAt,
+    product: context.currentTagline ?? 'source catalogue',
+    proposals: [],
+  };
+  const emptyHandoff = deriveHandoff(emptySet, inventory, scope);
 
+  // Do not disturb the active freeze contract until every new scan artefact
+  // and its identity-safe empty handoff have been constructed successfully.
+  rotateActiveRun(p.out);
   writeJson(p.inventory, inventory);
   // Deprecated filename retained for one release for external consumers.
   writeJson(p.product, context);
   writeJson(p.findings, findings);
   writeJson(p.behavior, behavior);
+  writeJson(p.handoff, emptyHandoff);
 
   return {
     inventory,
@@ -318,16 +336,7 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
           schemaVersion: STATE_SCHEMA_VERSION,
           runId: inventory.runId,
           inventoryDigest: inventory.inventoryDigest,
-          proposals: generated.map((proposal) => ({
-            copyId: proposal.copyId,
-            after: proposal.after,
-            alternatives: proposal.alternatives,
-            rationale: proposal.rationale,
-            problemSolved: proposal.problemSolved,
-            principles: proposal.principles,
-            evidence: proposal.evidence,
-            confidence: proposal.confidence,
-          })),
+          proposals: generated,
         };
         const imported = importAgentOutput(set, inventory, output, config, 'llm');
         set = imported.set;
@@ -611,6 +620,7 @@ function cmdApply(cwd: string, flags: Flags): void {
     persistProposalState(cwd, config, set, inventory);
     writeJson(p.applied, results);
     writeText(p.report, renderReport(set, results));
+    if (bad.length) process.exitCode = 1;
   }
 
   log.blank();

@@ -1,6 +1,6 @@
 import type { CatalogueScope, CopyItem, CopyKind, Surface } from '../types.js';
 import { catalogueKeyForFile } from './catalogue.js';
-import { hashText, shortHash } from '../util/fsx.js';
+import { hashText } from '../util/fsx.js';
 
 interface ParsedString {
   path: string[];
@@ -65,10 +65,14 @@ export function extractCatalogueFile(
 
   const parsed = parseCatalogueStrings(content);
   const fileHash = hashText(content);
-  return parsed.map((entry) => {
+  const items: CopyItem[] = parsed.map((entry) => {
     const catalogueKey = catalogueKeyForFile(scope, file, entry.path);
     return {
-      id: shortHash(file, catalogueKey),
+      id: hashText(JSON.stringify({
+        schemaVersion: 5,
+        file,
+        catalogueKey,
+      })).slice(0, 16),
       catalogueKey,
       sourceLocale: scope.sourceLocale,
       scopeDigest: scope.scopeDigest,
@@ -89,6 +93,34 @@ export function extractCatalogueFile(
       },
     };
   });
+  assertUniqueCatalogueIdentities(items);
+  return items;
+}
+
+/** Fail closed before a canonical key or copy ID can identify two targets. */
+export function assertUniqueCatalogueIdentities(items: CopyItem[]): void {
+  const byKey = new Map<string, CopyItem>();
+  const byId = new Map<string, CopyItem>();
+  for (const item of items) {
+    const sameKey = byKey.get(item.catalogueKey);
+    if (sameKey) {
+      throw new Error(
+        `Duplicate canonical catalogue key "${item.catalogueKey}" at ` +
+        `${sameKey.file}:${sameKey.line} and ${item.file}:${item.line}`,
+      );
+    }
+    byKey.set(item.catalogueKey, item);
+
+    const sameId = byId.get(item.id);
+    if (sameId) {
+      throw new Error(
+        `Catalogue copy ID collision "${item.id}" between ` +
+        `${sameId.catalogueKey} (${sameId.file}:${sameId.line}) and ` +
+        `${item.catalogueKey} (${item.file}:${item.line})`,
+      );
+    }
+    byId.set(item.id, item);
+  }
 }
 
 /**

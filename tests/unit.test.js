@@ -11,15 +11,17 @@ import { applyProposals } from '../dist/core/apply.js';
 import { loadBehavior, parseDelimited } from '../dist/core/behavior.js';
 import { serveCanvas } from '../dist/core/canvas.js';
 import { inferSurfaceFromKey, looksLikeCopy } from '../dist/core/catalogue-extract.js';
+import { writeHandoff } from '../dist/core/handoff.js';
 import { applyGuardrails } from '../dist/core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from '../dist/core/ingest.js';
 import { AGENT_TARGETS, install, uninstall } from '../dist/core/install.js';
+import { parseProposals } from '../dist/core/llm.js';
 import { buildMarketingContext } from '../dist/core/context.js';
 import { fixArticles, propose } from '../dist/core/propose.js';
 import { PRINCIPLES } from '../dist/core/psychology.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from '../dist/core/review.js';
 import { linkSiblings, localeOf, siblingGroups } from '../dist/core/siblings.js';
-import { scanRepo } from '../dist/core/scan.js';
+import { digestInventoryItems, scanRepo } from '../dist/core/scan.js';
 import { resolveCatalogueScope } from '../dist/core/catalogue.js';
 import {
   collectDecisionSet,
@@ -474,7 +476,39 @@ test('secure apply preflights the whole batch and writes nothing when one file i
   });
 
   assert.equal(results.some((result) => !result.ok), true);
+  assert.deepEqual(
+    state.set.proposals.map((proposal) => proposal.status),
+    ['failed', 'failed'],
+    'every approved proposal in the aborted batch becomes failed',
+  );
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, firstFile), 'utf8')), { action: 'Start first audit' });
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('a failed dry-run apply leaves approved proposal status unchanged', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-dry-failure-'));
+  const file = 'messages/en/page.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, file), '{"action":"Start my audit"}\n');
+  const state = secureApplyState(tmp, [{
+    file,
+    before: 'Start my audit',
+    after: 'Run my audit',
+  }]);
+  state.set.proposals[0].status = 'approved';
+  fs.writeFileSync(path.join(tmp, file), '{"action":"Changed after scan"}\n');
+
+  const results = applyProposals(state.set, {
+    cwd: tmp,
+    config: state.applyConfig,
+    backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory,
+    decisions: state.decisions,
+    dryRun: true,
+  });
+
+  assert.equal(results[0].ok, false);
+  assert.equal(state.set.proposals[0].status, 'approved');
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -561,6 +595,79 @@ test('installed guidance reads only the source catalogue, never code or target l
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('scan-only audit guidance references only artifacts that scan creates', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-install-audit-'));
+  try {
+    install(
+      tmp,
+      AGENT_TARGETS.filter((target) => ['agents-md', 'cursor'].includes(target.id)),
+    );
+    const auditGuides = [
+      fs.readFileSync(path.join(tmp, '.cursor/commands/copy-audit.md'), 'utf8'),
+      fs.readFileSync(path.join(here, '..', 'commands', 'copy-audit.md'), 'utf8'),
+    ];
+    for (const guide of auditGuides) {
+      assert.match(guide, /\.marketing-loop\/findings\.json/);
+      assert.match(guide, /\.marketing-loop\/inventory\.json/);
+      assert.match(guide, /\.marketing-loop\/behavior\.json/);
+      assert.doesNotMatch(guide, /\.marketing-loop\/brief\.md/);
+    }
+
+    const installedRule = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8');
+    assert.match(installedRule, /`propose` writes `\.marketing-loop\/brief\.md`/);
+    assert.doesNotMatch(installedRule, /`scan` and `propose` write `\.marketing-loop\/brief\.md`/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('public source types expose only catalogue JSON representations', () => {
+  const contract = path.join(
+    here,
+    `.public-types-${process.pid}-${Date.now()}.ts`,
+  );
+  const tsc = path.join(here, '..', 'node_modules', '.bin', 'tsc');
+  try {
+    fs.writeFileSync(contract, `
+import type { SourceRepresentation, SourceSpan } from '../dist/types.js';
+
+const representation: SourceRepresentation = 'json-string';
+const span: SourceSpan = {
+  raw: 'Source copy',
+  start: 1,
+  end: 12,
+  representation,
+  applicable: true,
+};
+
+// @ts-expect-error marketing-loop 0.5 no longer represents code or markup literals
+const legacyRepresentation: SourceRepresentation = 'plain';
+// @ts-expect-error the code-derived product model was removed from the public API
+type RemovedProductModel = import('../dist/types.js').ProductModel;
+// @ts-expect-error code-derived feature models were removed from the public API
+type RemovedFeature = import('../dist/types.js').Feature;
+
+void span;
+void legacyRepresentation;
+`);
+    const result = spawnSync(
+      tsc,
+      [
+        '--noEmit',
+        '--strict',
+        '--target', 'ES2022',
+        '--module', 'NodeNext',
+        '--moduleResolution', 'NodeNext',
+        contract,
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(contract, { force: true });
+  }
+});
+
 test('CLI copy and installed rules describe the catalogue-only handoff', () => {
   const cli = path.join(here, '..', 'dist', 'cli.js');
   const result = spawnSync(process.execPath, [cli, 'help'], { encoding: 'utf8' });
@@ -609,8 +716,18 @@ test('CLI init, scan, and status expose the enforced source-catalogue scope', ()
     assert.match(result.stdout, /Inspected source files/);
     assert.match(result.stdout, /locales\/en-US\/hero\.json/);
 
-    fs.mkdirSync(path.join(tmp, '.marketing-loop'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, '.marketing-loop', 'handoff.json'), JSON.stringify({ unresolved: [{ key: 'hero.title' }] }));
+    const out = path.join(tmp, '.marketing-loop');
+    const inventory = readJsonStrict(path.join(out, 'inventory.json'));
+    const emptyHandoff = readJsonStrict(path.join(out, 'handoff.json'));
+    assert.equal(emptyHandoff.marketingRunId, inventory.runId);
+    assert.equal(emptyHandoff.scopeDigest, inventory.scopeDigest);
+    assert.equal(emptyHandoff.sourceLocale, inventory.sourceLocale);
+    assert.deepEqual(emptyHandoff.unresolved, []);
+
+    fs.writeFileSync(path.join(out, 'handoff.json'), JSON.stringify({
+      ...emptyHandoff,
+      unresolved: [{ key: 'hero.title' }],
+    }));
     result = run('status');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /source locale .* en-US/);
@@ -622,6 +739,54 @@ test('CLI init, scan, and status expose the enforced source-catalogue scope', ()
     result = run('status');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stderr + result.stdout, /marketing-loop 0\.5 ignores "include" and "protectedFiles"; source catalogue scope is enforced\./);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('a failed scan preserves the complete previous active run and handoff', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cli-scan-failure-'));
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const out = path.join(tmp, '.marketing-loop');
+  const oldInventory = {
+    schemaVersion: 5,
+    runId: 'old-run',
+    inventoryDigest: 'old-inventory',
+  };
+  const oldHandoff = {
+    schemaVersion: 1,
+    marketingRunId: 'old-run',
+    scopeDigest: 'old-scope',
+    messagesDir: 'messages',
+    sourceLocale: 'en',
+    layout: 'single-file',
+    unresolved: [{
+      key: 'hero.title',
+      file: 'messages/en.json',
+      sourceHash: hashText('Old source'),
+      status: 'pending',
+    }],
+  };
+
+  try {
+    fs.mkdirSync(path.join(tmp, 'messages'), { recursive: true });
+    fs.mkdirSync(out, { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'messages', 'en.json'), '{"hero":');
+    writeJson(path.join(out, 'inventory.json'), oldInventory);
+    writeJson(path.join(out, 'handoff.json'), oldHandoff);
+    fs.writeFileSync(path.join(out, 'review.md'), 'old review\n');
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, 'scan', '--cwd', tmp],
+      { encoding: 'utf8' },
+    );
+
+    assert.notEqual(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(readJsonStrict(path.join(out, 'inventory.json')), oldInventory);
+    assert.deepEqual(readJsonStrict(path.join(out, 'handoff.json')), oldHandoff);
+    assert.equal(fs.readFileSync(path.join(out, 'review.md'), 'utf8'), 'old review\n');
+    assert.equal(fs.existsSync(path.join(out, 'history', 'old-run')), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1058,6 +1223,146 @@ test('agent output is canonicalized from inventory and cannot approve itself', (
   assert.match(proposal.id, /^[a-f0-9]{8}$/);
 });
 
+test('schema-compliant API-model output goes through canonical untrusted import', () => {
+  const scan = scanRepo(FIXTURE, config, 'run-llm-import');
+  const item = scan.items.find((candidate) => candidate.text === 'No deployments found.');
+  assert.ok(item);
+  const inventory = {
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    repositoryRoot: FIXTURE,
+    filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy,
+    truncated: scan.truncated,
+    items: scan.items,
+  };
+  const set = {
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    product: 'test',
+    proposals: [],
+  };
+  const modelProposal = {
+    copyId: item.id,
+    after: 'Connect your first deployment to see it here.',
+    alternatives: ['Connect a deployment'],
+    rationale: 'Gives the empty state a recovery action.',
+    problemSolved: 'The user did not know what to do next.',
+    principles: ['goal-gradient'],
+    evidence: ['The source catalogue names deployments.'],
+    confidence: 0.8,
+    file: '../forged.json',
+    status: 'approved',
+  };
+
+  const parsed = parseProposals(
+    JSON.stringify({ proposals: [modelProposal] }),
+    config,
+  );
+  assert.deepEqual(parsed, [{
+    copyId: modelProposal.copyId,
+    after: modelProposal.after,
+    alternatives: modelProposal.alternatives,
+    rationale: modelProposal.rationale,
+    problemSolved: modelProposal.problemSolved,
+    principles: modelProposal.principles,
+    evidence: modelProposal.evidence,
+    confidence: modelProposal.confidence,
+  }]);
+
+  const imported = importAgentOutput(set, inventory, {
+    schemaVersion: 5,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    proposals: parsed,
+  }, config, 'llm');
+  assert.equal(imported.accepted, 1);
+  assert.equal(imported.set.proposals[0].file, item.file);
+  assert.equal(imported.set.proposals[0].before, item.text);
+  assert.equal(imported.set.proposals[0].status, 'pending');
+  assert.equal(imported.set.proposals[0].author, 'llm');
+});
+
+test('agent import enforces configured surfaces from canonical inventory identity', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-import-surface-'));
+  try {
+    fs.mkdirSync(path.join(tmp, 'messages'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, 'messages', 'en.json'),
+      '{"legal":{"terms":{"heading":"Terms apply"}}}\n',
+    );
+    const scan = scanRepo(tmp, defaultConfig, 'run-import-surface');
+    const item = scan.items[0];
+    assert.equal(item.catalogueKey, 'legal.terms.heading');
+    assert.equal(item.surface, 'legal');
+    item.surface = 'app';
+    const inventoryDigest = digestInventoryItems(
+      scan.items,
+      scan.scopeDigest,
+      scan.sourceLocale,
+    );
+    const inventory = {
+      schemaVersion: 5,
+      scopeDigest: scan.scopeDigest,
+      sourceLocale: scan.sourceLocale,
+      runId: scan.runId,
+      inventoryDigest,
+      generatedAt: '',
+      repositoryRoot: tmp,
+      filesScanned: scan.filesScanned,
+      filesWithCopy: scan.filesWithCopy,
+      truncated: scan.truncated,
+      items: scan.items,
+    };
+    const set = {
+      schemaVersion: 5,
+      scopeDigest: scan.scopeDigest,
+      sourceLocale: scan.sourceLocale,
+      runId: scan.runId,
+      inventoryDigest,
+      generatedAt: '',
+      product: 'test',
+      proposals: [],
+    };
+    const output = {
+      schemaVersion: 5,
+      runId: scan.runId,
+      inventoryDigest,
+      proposals: [{
+        copyId: item.id,
+        after: 'Terms that are easier to understand',
+        alternatives: [],
+        rationale: 'Clarifies the heading.',
+        problemSolved: 'The original was vague.',
+        principles: [],
+        evidence: ['The canonical key is legal.terms.heading.'],
+        confidence: 0.8,
+      }],
+    };
+
+    let imported = importAgentOutput(set, inventory, output, defaultConfig);
+    assert.equal(imported.accepted, 0);
+    assert.match(imported.rejected[0].reason, /surface legal.*not configured/i);
+
+    imported = importAgentOutput(set, inventory, output, {
+      ...defaultConfig,
+      surfaces: [...defaultConfig.surfaces, 'legal'],
+    });
+    assert.equal(imported.accepted, 1);
+    assert.equal(imported.set.proposals[0].catalogueKey, 'legal.terms.heading');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('agent output identity must match the active run', () => {
   const raw = JSON.stringify({
     schemaVersion: 5,
@@ -1255,6 +1560,157 @@ test('canvas requires its launch token and writes digest-bound decisions', async
   }
 });
 
+async function canvasPost(origin, token, pathname, payload) {
+  return fetch(origin + pathname, {
+    method: 'POST',
+    headers: {
+      origin,
+      'content-type': 'application/json',
+      'x-marketing-loop-token': token,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+test('canvas decide-group and apply refresh proposal state and the handoff', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-canvas-group-'));
+  const firstFile = 'messages/en/a.json';
+  const secondFile = 'messages/en/b.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, firstFile), '{"action":"Start my audit"}\n');
+  fs.writeFileSync(path.join(tmp, secondFile), '{"action":"Start my audit"}\n');
+  const state = secureApplyState(tmp, [
+    { file: firstFile, before: 'Start my audit', after: 'Run my audit' },
+    { file: secondFile, before: 'Start my audit', after: 'Run my audit' },
+  ]);
+  state.set.proposals[0].id = 'deadbeef';
+  state.set.proposals[1].id = 'cafebabe';
+  state.set.proposals[0].siblings = ['cafebabe'];
+  state.set.proposals[1].siblings = ['deadbeef'];
+  const out = path.join(tmp, '.marketing-loop');
+  const handoffPath = path.join(out, 'handoff.json');
+  const canvas = await serveCanvas({
+    cwd: tmp,
+    config: state.applyConfig,
+    set: state.set,
+    inventory: state.inventory,
+    proposalsPath: path.join(out, 'proposals.json'),
+    decisionsPath: path.join(out, 'decisions.json'),
+    backupDir: path.join(out, 'backups'),
+    port: 0,
+    onStateChanged: (set, inventory) => {
+      writeHandoff(
+        handoffPath,
+        set,
+        inventory,
+        resolveCatalogueScope(tmp, state.applyConfig),
+      );
+    },
+  });
+
+  try {
+    const launch = new URL(canvas.url);
+    const token = launch.searchParams.get('token');
+    assert.ok(token);
+
+    const grouped = await canvasPost(
+      launch.origin,
+      token,
+      '/api/decide-group',
+      { id: 'deadbeef', status: 'approved' },
+    );
+    assert.equal(grouped.status, 200);
+    assert.deepEqual(
+      (await grouped.json()).changed.sort(),
+      ['cafebabe', 'deadbeef'],
+    );
+    assert.deepEqual(
+      readJsonStrict(handoffPath).unresolved.map(({ status }) => status),
+      ['approved', 'approved'],
+    );
+
+    const applied = await canvasPost(launch.origin, token, '/api/apply', {});
+    assert.equal(applied.status, 200);
+    assert.equal((await applied.json()).results.every((result) => result.ok), true);
+    assert.deepEqual(
+      state.set.proposals.map((proposal) => proposal.status),
+      ['applied', 'applied'],
+    );
+    assert.deepEqual(readJsonStrict(handoffPath).unresolved, []);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, firstFile), 'utf8')), {
+      action: 'Run my audit',
+    });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, secondFile), 'utf8')), {
+      action: 'Run my audit',
+    });
+  } finally {
+    canvas.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('canvas failed apply marks approved proposals failed and refreshes the handoff', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-canvas-failed-'));
+  const file = 'messages/en/page.json';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, file), '{"action":"Start my audit"}\n');
+  const state = secureApplyState(tmp, [{
+    file,
+    before: 'Start my audit',
+    after: 'Run my audit',
+  }]);
+  state.set.proposals[0].id = 'deadbeef';
+  const out = path.join(tmp, '.marketing-loop');
+  const proposalsPath = path.join(out, 'proposals.json');
+  const handoffPath = path.join(out, 'handoff.json');
+  const canvas = await serveCanvas({
+    cwd: tmp,
+    config: state.applyConfig,
+    set: state.set,
+    inventory: state.inventory,
+    proposalsPath,
+    decisionsPath: path.join(out, 'decisions.json'),
+    backupDir: path.join(out, 'backups'),
+    port: 0,
+    onStateChanged: (set, inventory) => {
+      writeHandoff(
+        handoffPath,
+        set,
+        inventory,
+        resolveCatalogueScope(tmp, state.applyConfig),
+      );
+    },
+  });
+
+  try {
+    const launch = new URL(canvas.url);
+    const token = launch.searchParams.get('token');
+    assert.ok(token);
+
+    const decided = await canvasPost(
+      launch.origin,
+      token,
+      '/api/decide',
+      { id: 'deadbeef', status: 'approved' },
+    );
+    assert.equal(decided.status, 200);
+    assert.equal(readJsonStrict(handoffPath).unresolved[0].status, 'approved');
+
+    fs.writeFileSync(path.join(tmp, file), '{"action":"Changed after scan"}\n');
+    const applied = await canvasPost(launch.origin, token, '/api/apply', {});
+    assert.equal(applied.status, 200);
+    const results = (await applied.json()).results;
+    assert.equal(results[0].ok, false);
+    assert.match(results[0].reason, /changed since the scan/);
+    assert.equal(state.set.proposals[0].status, 'failed');
+    assert.equal(readJsonStrict(proposalsPath).proposals[0].status, 'failed');
+    assert.deepEqual(readJsonStrict(handoffPath).unresolved, []);
+  } finally {
+    canvas.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('schema v5 CLI completes scan, agent import, human review, and safe apply', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-e2e-'));
   fs.cpSync(FIXTURE, tmp, { recursive: true });
@@ -1331,6 +1787,60 @@ test('schema v5 CLI completes scan, agent import, human review, and safe apply',
     result = run('apply');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(fs.readFileSync(source, 'utf8'), /Connect your first deployment to see it here\./);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('failed CLI apply persists failed status, refreshes handoff, and exits non-zero', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cli-failed-apply-'));
+  fs.cpSync(FIXTURE, tmp, { recursive: true });
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const run = (...args) => spawnSync(
+    process.execPath,
+    [cli, ...args, '--cwd', tmp],
+    { encoding: 'utf8' },
+  );
+
+  try {
+    let result = run('propose');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const out = path.join(tmp, '.marketing-loop');
+    result = run('review');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const set = readJsonStrict(path.join(out, 'proposals.json'));
+    const chosen = set.proposals[0];
+    assert.ok(chosen);
+    const reviewPath = path.join(out, 'review.md');
+    const review = fs.readFileSync(reviewPath, 'utf8').replace(
+      `<!-- marketing-loop:${chosen.id} -->\n- [ ] APPROVE`,
+      `<!-- marketing-loop:${chosen.id} -->\n- [x] APPROVE`,
+    );
+    fs.writeFileSync(reviewPath, review);
+
+    result = run('review', '--collect');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(
+      readJsonStrict(path.join(out, 'handoff.json')).unresolved
+        .some((entry) => entry.key === chosen.catalogueKey && entry.status === 'approved'),
+      true,
+    );
+
+    fs.appendFileSync(path.join(tmp, chosen.file), '\n');
+    result = run('apply');
+
+    assert.notEqual(result.status, 0, result.stderr || result.stdout);
+    const failedSet = readJsonStrict(path.join(out, 'proposals.json'));
+    assert.equal(
+      failedSet.proposals.find((proposal) => proposal.id === chosen.id).status,
+      'failed',
+    );
+    assert.equal(
+      readJsonStrict(path.join(out, 'handoff.json')).unresolved
+        .some((entry) => entry.key === chosen.catalogueKey),
+      false,
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

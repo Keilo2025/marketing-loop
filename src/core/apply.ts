@@ -22,12 +22,17 @@ import type {
   Proposal,
   ProposalSet,
 } from '../types.js';
-import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
+import {
+  ACTIVE_STATE_SCHEMA_ERROR,
+  DEFAULT_SURFACES,
+  STATE_SCHEMA_VERSION,
+} from '../types.js';
 import { hashText, readJsonStrict, writeJson, writeText } from '../util/fsx.js';
 import { checkProposal } from './guardrails.js';
 import { digestInventoryItems } from './scan.js';
 import { isSafeRunId, validateDecisionSet } from './state.js';
 import { isCatalogueTarget, resolveCatalogueScope } from './catalogue.js';
+import { inferSurfaceFromKey } from './catalogue-extract.js';
 
 export interface ApplyOptions {
   cwd: string;
@@ -62,16 +67,25 @@ interface PreparedChange {
 function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
   const { inventory, decisions } = opts;
   const authorized = decisions?.decisions.filter((decision) => decision.decision === 'approved') ?? [];
+  const markAuthorizedFailed = (): void => {
+    if (opts.dryRun) return;
+    const authorizedIds = new Set(authorized.map((decision) => decision.proposalId));
+    for (const proposal of set.proposals) {
+      if (authorizedIds.has(proposal.id)) proposal.status = 'failed';
+    }
+  };
   const failAll = (reason: string): ApplyResult[] => {
     const ids = authorized.length
       ? authorized.map((decision) => decision.proposalId)
       : set.proposals.map((proposal) => proposal.id);
-    return ids.map((proposalId) => ({
+    const failures = ids.map((proposalId) => ({
       proposalId,
       file: set.proposals.find((proposal) => proposal.id === proposalId)?.file ?? '',
       ok: false,
       reason,
     }));
+    markAuthorizedFailed();
+    return failures;
   };
 
   if (!inventory || !decisions) {
@@ -128,6 +142,10 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
         !isCatalogueTarget(scope, item.file)
       ) {
         throw new Error('approved target is outside the source catalogue');
+      }
+      const canonicalSurface = inferSurfaceFromKey(item.catalogueKey);
+      if (!(opts.config.surfaces ?? DEFAULT_SURFACES).includes(canonicalSurface)) {
+        throw new Error(`surface ${canonicalSurface} is not configured for marketing apply`);
       }
       if (
         proposal.file !== item.file ||
@@ -191,6 +209,7 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
     for (const result of results) {
       if (!result.reason) result.reason = 'batch aborted because another change failed preflight';
     }
+    markAuthorizedFailed();
     return results;
   }
 

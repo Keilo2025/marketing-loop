@@ -63,6 +63,17 @@ Every source edit is bound to the active catalogue inventory and a human approva
 
 If `language-loop.config.json` exists, its `messagesDir`, `sourceLocale`, and `layout` are authoritative. Marketing-loop refuses a disagreement. Older `include` and `protectedFiles` settings are accepted for migration but ignored: source-catalogue scope is enforced.
 
+## Migrating to 0.5
+
+Version 0.5 is an intentional catalogue-only boundary change:
+
+- Marketing-loop now scans and writes only source-locale JSON catalogues. Application source, package metadata, README content, and target locales are outside its copy scope.
+- Active schema-v4 inventory, proposals, reviews, and decisions are refused because they may target application files. Run `marketing-loop propose` to archive the old run and regenerate schema-v5 state from the source catalogue.
+- The old programmatic code-scanner exports `buildProductModel`, `extractFromFile`, and `SCANNABLE` were removed. Use `resolveCatalogueScope`, `scanRepo`, and `extractCatalogueFile`.
+- Legacy `include` and `protectedFiles` configuration remains readable for one migration release but is ignored and cannot widen catalogue scope.
+- Standalone use remains supported through the explicit `catalogue` block or the safe `messages/en.json` default; `language-loop` is not a runtime dependency.
+- When `language-loop` is present, upgrade the tools as a coordinated optional lifecycle: extract first, settle and apply marketing decisions, then translate, judge, and apply locales. The atomic handoff freezes only unresolved canonical source keys.
+
 ## Install guidance for agents
 
 ```bash

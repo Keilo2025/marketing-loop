@@ -6,8 +6,13 @@ import type {
   Proposal,
   ProposalSet,
 } from '../types.js';
-import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
+import {
+  ACTIVE_STATE_SCHEMA_ERROR,
+  DEFAULT_SURFACES,
+  STATE_SCHEMA_VERSION,
+} from '../types.js';
 import { shortHash } from '../util/fsx.js';
+import { inferSurfaceFromKey } from './catalogue-extract.js';
 import { applyGuardrails } from './guardrails.js';
 import { PRINCIPLES } from './psychology.js';
 import { linkSiblings } from './siblings.js';
@@ -56,16 +61,22 @@ export function parseAgentOutput(raw: string, file = 'agent-output.json'): Agent
   if (typeof object.inventoryDigest !== 'string' || !object.inventoryDigest) {
     throw new Error(`Invalid ${file}: inventoryDigest must be a non-empty string`);
   }
-  if (!Array.isArray(object.proposals)) {
-    throw new Error(`Invalid ${file}: proposals must be an array`);
-  }
-
   return {
     schemaVersion: STATE_SCHEMA_VERSION,
     runId: object.runId,
     inventoryDigest: object.inventoryDigest,
-    proposals: object.proposals.map((entry, index) => parseAgentProposal(entry, file, index)),
+    proposals: parseAgentProposals(object.proposals, file),
   };
+}
+
+export function parseAgentProposals(
+  entries: unknown,
+  file = 'agent-output.json',
+): AgentProposal[] {
+  if (!Array.isArray(entries)) {
+    throw new Error(`Invalid ${file}: proposals must be an array`);
+  }
+  return entries.map((entry, index) => parseAgentProposal(entry, file, index));
 }
 
 function parseAgentProposal(entry: unknown, file: string, index: number): AgentProposal {
@@ -149,6 +160,7 @@ export function importAgentOutput(
   const blocked: ImportBlock[] = [];
   const rejected: ImportRejection[] = [];
   const seen = new Set<string>();
+  const configuredSurfaces = new Set(config.surfaces ?? DEFAULT_SURFACES);
 
   for (const [index, incoming] of output.proposals.entries()) {
     if (seen.has(incoming.copyId)) {
@@ -160,6 +172,15 @@ export function importAgentOutput(
     const item = itemById.get(incoming.copyId);
     if (!item) {
       rejected.push({ index, copyId: incoming.copyId, reason: 'copyId is not in the active inventory' });
+      continue;
+    }
+    const canonicalSurface = inferSurfaceFromKey(item.catalogueKey);
+    if (!configuredSurfaces.has(canonicalSurface)) {
+      rejected.push({
+        index,
+        copyId: incoming.copyId,
+        reason: `surface ${canonicalSurface} is not configured for marketing proposals`,
+      });
       continue;
     }
     const invalidPrinciple = incoming.principles.find((principle) => !knownPrinciples.has(principle));

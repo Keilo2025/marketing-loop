@@ -124,13 +124,13 @@ Then tell me to run \`npx marketing-loop review --ui\`. Do not run \`apply\` unl
 npx marketing-loop@latest scan
 \`\`\`
 
-Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** Read \`.marketing-loop/findings.json\`, \`.marketing-loop/inventory.json\`, \`.marketing-loop/brief.md\`, and \`.marketing-loop/behavior.json\`, then write the report.
+Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** Read \`.marketing-loop/findings.json\`, \`.marketing-loop/inventory.json\`, \`.marketing-loop/behavior.json\`, and \`marketing-loop.config.json\` when present, then write the report.
 
 When language-loop is available, run \`language-loop scan\` and \`language-loop extract\` before this audit. Source edits make translations stale; language-loop translates only after marketing review and apply settle. Marketing-loop never changes target locales.
 
 ## What the source catalogue says
 
-One paragraph grounded only in source-catalogue text, approved claims, behavioural data, and the brief. State unanswered questions instead of inferring product behavior from application code.
+One paragraph grounded only in source-catalogue text, approved claims, behavioural data, and scan findings. State unanswered questions instead of inferring product behavior from application code.
 
 ## The five strings costing the most
 
@@ -503,7 +503,7 @@ npx marketing-loop review    # human approves — markdown, or --ui for the canv
 npx marketing-loop apply     # writes only what a human approved
 \`\`\`
 
-\`scan\` and \`propose\` write \`.marketing-loop/brief.md\`. **Read that file.** It contains source-catalogue context, behavioural data from \`marketing-data/\`, voice constraints, and a list of open items with the exact JSON schema for your response.
+\`propose\` writes \`.marketing-loop/brief.md\`. **Read that file.** It contains source-catalogue context, behavioural data from \`marketing-data/\`, voice constraints, and a list of open items with the exact JSON schema for your response.
 
 ### Your part
 

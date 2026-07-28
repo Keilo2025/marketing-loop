@@ -35,8 +35,98 @@ test('catalogue extraction preserves canonical keys and exact JSON spans', () =>
   assert.equal(headline.kind, 'headline');
   assert.equal(headline.surface, 'landing');
   assert.equal(headline.sourceLocale, 'en');
+  assert.match(headline.id, /^[a-f0-9]{16}$/);
   assert.equal(content.slice(headline.source.start, headline.source.end), 'Deploy with confidence');
   assert.equal(headline.source.representation, 'json-string');
+});
+
+test('catalogue extraction rejects duplicate JSON properties and dotted-path aliases', () => {
+  const scope = {
+    messagesDir: 'messages',
+    sourceLocale: 'en',
+    layout: 'single-file',
+    files: ['messages/en.json'],
+    scopeDigest: 'scope',
+  };
+
+  assert.throws(
+    () => extractCatalogueFile(
+      'messages/en.json',
+      '{"hero":{"title":"First","title":"Second"}}',
+      scope,
+    ),
+    /duplicate canonical catalogue key "hero\.title"/i,
+  );
+  assert.throws(
+    () => extractCatalogueFile(
+      'messages/en.json',
+      '{"hero.title":"First","hero":{"title":"Second"}}',
+      scope,
+    ),
+    /duplicate canonical catalogue key "hero\.title"/i,
+  );
+});
+
+test('scan rejects canonical-key collisions across the full namespaced scope', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-scan-key-collision-'));
+  try {
+    fs.mkdirSync(path.join(cwd, 'messages', 'en'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, 'language-loop.config.json'),
+      JSON.stringify({
+        messagesDir: 'messages',
+        sourceLocale: 'en',
+        layout: 'namespaced',
+      }),
+    );
+    fs.writeFileSync(
+      path.join(cwd, 'messages', 'en', 'hero.json'),
+      '{"title.cta":"Start first"}\n',
+    );
+    fs.writeFileSync(
+      path.join(cwd, 'messages', 'en', 'hero.title.json'),
+      '{"cta":"Start second"}\n',
+    );
+
+    assert.throws(
+      () => scanRepo(cwd, defaultConfig, 'collision-run'),
+      /duplicate canonical catalogue key "hero\.title\.cta"/i,
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('catalogue identity validation fails closed on copy-ID collisions', async () => {
+  const module = await import('../dist/core/catalogue-extract.js');
+  assert.equal(typeof module.assertUniqueCatalogueIdentities, 'function');
+  const base = {
+    sourceLocale: 'en',
+    scopeDigest: 'scope',
+    line: 1,
+    text: 'Source',
+    kind: 'body',
+    surface: 'app',
+    context: [],
+    length: 6,
+  };
+  assert.throws(
+    () => module.assertUniqueCatalogueIdentities([
+      {
+        ...base,
+        id: 'same-copy-id',
+        catalogueKey: 'first.key',
+        file: 'messages/en/first.json',
+      },
+      {
+        ...base,
+        id: 'same-copy-id',
+        catalogueKey: 'second.key',
+        file: 'messages/en/second.json',
+      },
+    ]),
+    /copy ID collision.*same-copy-id/i,
+  );
 });
 
 test('key classification is independent from file names', () => {

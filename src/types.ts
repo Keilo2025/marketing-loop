@@ -34,18 +34,8 @@ export const DEFAULT_SURFACES: Surface[] = ['landing', 'store', 'email', 'app'];
 export const STATE_SCHEMA_VERSION = 5 as const;
 export const ACTIVE_STATE_SCHEMA_ERROR = 'Active marketing state is schema v4 and may target code. Run `marketing-loop propose` to regenerate it.';
 
-export type SourceRepresentation =
-  | 'plain'
-  | 'html-text'
-  | 'html-attribute-double'
-  | 'html-attribute-single'
-  | 'js-string-double'
-  | 'js-string-single'
-  | 'js-template'
-  | 'json-string'
-  | 'yaml-plain'
-  | 'yaml-double'
-  | 'yaml-single';
+/** The catalogue-only release applies only decoded JSON string values. */
+export type SourceRepresentation = 'json-string';
 
 export interface SourceSpan {
   /** Exact bytes between the source delimiters. */
@@ -58,7 +48,7 @@ export interface SourceSpan {
   applicable: boolean;
 }
 
-/** A single string of user-facing copy located in the codebase. */
+/** A single string leaf in the configured source JSON catalogue. */
 export interface CopyItem {
   /** Stable id: short hash of catalogue file + canonical key. */
   id: string;
@@ -72,17 +62,13 @@ export interface CopyItem {
   file: string;
   /** 1-based line number of the string. */
   line: number;
-  /** The exact literal contents as they appear in source (unescaped). */
+  /** The decoded source-catalogue value shown during review. */
   text: string;
-  /** How the string is used, inferred from its surroundings. */
+  /** How the string is used, inferred from its canonical key. */
   kind: CopyKind;
-  /** Which product surface the file belongs to. */
+  /** Which product surface the canonical key belongs to. */
   surface: Surface;
-  /** HTML element or component the string sits in, when detectable. */
-  element?: string;
-  /** Attribute name if the copy came from an attribute (placeholder, alt, title...). */
-  attr?: string;
-  /** Free-form hints used by the analyser: class names, component name, nearby ids. */
+  /** Catalogue-key hints used by analysis and proposal generation. */
   context: string[];
   /** Number of characters — cheap proxy for headline vs body. */
   length: number;
@@ -114,34 +100,6 @@ export interface CopyFinding {
   message: string;
   /** Psychology principle ids that would address it. */
   suggests: string[];
-}
-
-export interface Feature {
-  name: string;
-  /** File paths / symbols that prove the feature exists. */
-  evidence: string[];
-  /** What the user can now do — filled by the analyser or the agent. */
-  capability?: string;
-  /** The problem it removes — the thing worth selling. */
-  problem?: string;
-  /** The outcome the user gets. */
-  outcome?: string;
-}
-
-export interface ProductModel {
-  name: string;
-  tagline?: string;
-  description?: string;
-  stack: string[];
-  routes: string[];
-  features: Feature[];
-  /** Signals about who this is for, pulled from code, README and config. */
-  audienceHints: string[];
-  /** Pricing tiers found in the code, if any. */
-  pricingTiers: string[];
-  /** Integrations found in dependencies — often the strongest proof points. */
-  integrations: string[];
-  generatedAt: string;
 }
 
 export type BehaviorSource =
@@ -221,7 +179,7 @@ export interface Proposal {
   problemSolved: string;
   /** Psychology principle ids applied. */
   principles: string[];
-  /** Behavior signals or code facts backing it. */
+  /** Source-catalogue, configured-claim, or marketing-data evidence backing it. */
   evidence: string[];
   /** 0–1. Below 0.5 means "needs a human to think about it". */
   confidence: number;
@@ -357,9 +315,9 @@ export interface MarketingContext {
 }
 
 export interface LoopConfig {
-  /** Directories to scan for copy; they do not define catalogue scope. */
+  /** @deprecated Accepted for 0.5 migration only; never defines catalogue scope. */
   include: string[];
-  /** Glob-ish fragments to skip. */
+  /** @deprecated Accepted for configuration compatibility; catalogue scope is authoritative. */
   exclude: string[];
   /** Where behavioral exports live. */
   dataDir: string;
@@ -390,7 +348,7 @@ export interface LoopConfig {
   surfaces?: Surface[];
   /** Persuasion techniques explicitly switched off for this project. */
   disabledPrinciples: string[];
-  /** Never touch these files even if they contain copy; they do not define catalogue scope. */
+  /** @deprecated Accepted for 0.5 migration only; never defines catalogue scope. */
   protectedFiles: string[];
   /** Optional explicit source catalogue, overridden by language-loop.config.json. */
   catalogue?: CatalogueConfig;

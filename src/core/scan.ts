@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { CopyItem, LoopConfig } from '../types.js';
+import type { CatalogueScope, CopyItem, LoopConfig } from '../types.js';
 import { hashText, read } from '../util/fsx.js';
 import { resolveCatalogueScope } from './catalogue.js';
-import { extractCatalogueFile } from './catalogue-extract.js';
+import {
+  assertUniqueCatalogueIdentities,
+  extractCatalogueFile,
+} from './catalogue-extract.js';
 
 export interface ScanResult {
   items: CopyItem[];
@@ -17,8 +20,20 @@ export interface ScanResult {
   sourceLocale: string;
 }
 
-export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()): ScanResult {
-  const scope = resolveCatalogueScope(cwd, config);
+export function scanRepo(
+  cwd: string,
+  config: LoopConfig,
+  runId = randomUUID(),
+): ScanResult {
+  return scanResolvedCatalogue(cwd, resolveCatalogueScope(cwd, config), runId);
+}
+
+/** Internal CLI path for reusing one already-resolved immutable run scope. */
+export function scanResolvedCatalogue(
+  cwd: string,
+  scope: CatalogueScope,
+  runId = randomUUID(),
+): ScanResult {
   const files = scope.files;
 
   const items: CopyItem[] = [];
@@ -33,6 +48,7 @@ export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()):
     }
   }
 
+  assertUniqueCatalogueIdentities(items);
   const unique = dedupe(items);
   const inventoryDigest = digestInventoryItems(unique, scope.scopeDigest, scope.sourceLocale);
 
@@ -59,6 +75,7 @@ export function digestInventoryItems(items: CopyItem[], scopeDigest = items[0]?.
     line: item.line,
     text: item.text,
     kind: item.kind,
+    surface: item.surface,
     fileHash: item.fileHash,
     start: item.source?.start,
     end: item.source?.end,
