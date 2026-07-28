@@ -302,6 +302,13 @@ export interface ApplyResult {
   backup?: string;
 }
 
+export interface BackupManifest {
+  schemaVersion: 5;
+  runId: string;
+  scopeDigest: string;
+  files: string[];
+}
+
 export type CatalogueLayout = 'single-file' | 'namespaced' | 'custom';
 
 export interface CatalogueConfig {

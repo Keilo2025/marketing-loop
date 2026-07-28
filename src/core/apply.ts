@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type {
   ApplyResult,
+  BackupManifest,
   CopyItem,
   DecisionSet,
   Inventory,
@@ -22,11 +23,11 @@ import type {
   ProposalSet,
 } from '../types.js';
 import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
-import { hashText, writeText } from '../util/fsx.js';
+import { hashText, readJsonStrict, writeJson, writeText } from '../util/fsx.js';
 import { checkProposal } from './guardrails.js';
 import { digestInventoryItems } from './scan.js';
 import { validateDecisionSet } from './state.js';
-import { resolveCatalogueScope } from './catalogue.js';
+import { isCatalogueTarget, resolveCatalogueScope } from './catalogue.js';
 
 export interface ApplyOptions {
   cwd: string;
@@ -92,10 +93,10 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
     return failAll(error instanceof Error ? error.message : String(error));
   }
   if (
-    inventory.scopeDigest !== scope.scopeDigest ||
-    inventory.sourceLocale !== scope.sourceLocale
+    scope.scopeDigest !== set.scopeDigest ||
+    scope.scopeDigest !== inventory.scopeDigest
   ) {
-    return failAll('active state does not match the configured source catalogue');
+    return failAll('catalogue scope changed since review; run marketing-loop propose again');
   }
   if (digestInventoryItems(inventory.items, inventory.scopeDigest, inventory.sourceLocale) !== inventory.inventoryDigest) {
     return failAll('inventory digest does not match its contents');
@@ -120,6 +121,12 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
       const item = itemById.get(proposal.copyId);
       if (!item) throw new Error('copyId is not present in the active inventory');
       if (
+        item.sourceLocale !== scope.sourceLocale ||
+        !isCatalogueTarget(scope, item.file)
+      ) {
+        throw new Error('approved target is outside the source catalogue');
+      }
+      if (
         proposal.file !== item.file ||
         proposal.catalogueKey !== item.catalogueKey ||
         proposal.sourceLocale !== item.sourceLocale ||
@@ -133,6 +140,9 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
       if (!item.fileHash || !item.source || !item.source.applicable) {
         throw new Error('inventory item has no applicable exact source span');
       }
+      if (item.source.representation !== 'json-string') {
+        throw new Error('unsupported source representation');
+      }
 
       const finalText = decision.finalText;
       const guardrailHits = checkProposal(
@@ -143,7 +153,7 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
         throw new Error(`final text blocked by guardrails: ${guardrailHits.map((hit) => hit.rule).join(', ')}`);
       }
 
-      const abs = confinedTarget(opts.cwd, item.file, opts.config);
+      const abs = confinedTarget(opts.cwd, item.file);
       const content = fs.readFileSync(abs, 'utf8');
       if (hashText(content) !== item.fileHash) {
         throw new Error('file changed since the scan; run scan and review again');
@@ -227,10 +237,20 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
   const realRoot = fs.realpathSync(opts.cwd);
   const written: string[] = [];
   try {
+    const files = [...updates.keys()]
+      .map((abs) => path.relative(realRoot, abs).split(path.sep).join('/'))
+      .sort();
     for (const [abs, entry] of updates) {
       const rel = path.relative(realRoot, abs);
       writeText(path.join(runDir, rel), entry.original);
     }
+    const manifest: BackupManifest = {
+      schemaVersion: STATE_SCHEMA_VERSION,
+      runId: set.runId,
+      scopeDigest: set.scopeDigest,
+      files,
+    };
+    writeJson(path.join(runDir, 'backup-manifest.json'), manifest);
     for (const [abs, entry] of updates) {
       writeText(abs, entry.updated);
       written.push(abs);
@@ -268,7 +288,7 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
   }));
 }
 
-function confinedTarget(cwd: string, file: string, config: LoopConfig): string {
+function confinedTarget(cwd: string, file: string): string {
   const normalized = file.replace(/\\/g, '/').replace(/^\.\//, '');
   const clean = path.posix.normalize(normalized);
   if (
@@ -280,13 +300,6 @@ function confinedTarget(cwd: string, file: string, config: LoopConfig): string {
   ) {
     throw new Error('target path must stay inside the repository');
   }
-  const protectedFiles = new Set(
-    config.protectedFiles.map((candidate) =>
-      path.posix.normalize(candidate.replace(/\\/g, '/').replace(/^\.\//, '')),
-    ),
-  );
-  if (protectedFiles.has(clean)) throw new Error('file is listed in protectedFiles');
-
   const root = fs.realpathSync(cwd);
   const abs = path.resolve(root, ...clean.split('/'));
   if (abs !== root && !abs.startsWith(root + path.sep)) {
@@ -307,56 +320,59 @@ function confinedTarget(cwd: string, file: string, config: LoopConfig): string {
 }
 
 function encodeReplacement(item: CopyItem, text: string): string {
-  if (text.includes('\0')) throw new Error('replacement contains a NUL byte');
-  switch (item.source?.representation) {
-    case 'json-string':
-    case 'js-string-double':
-    case 'yaml-double':
-      return JSON.stringify(text).slice(1, -1);
-    case 'js-string-single':
-      return text
-        .replace(/\\/g, '\\\\')
-        .replace(/'/g, "\\'")
-        .replace(/\r/g, '\\r')
-        .replace(/\n/g, '\\n')
-        .replace(/\u2028/g, '\\u2028')
-        .replace(/\u2029/g, '\\u2029');
-    case 'js-template':
-      return text
-        .replace(/\\/g, '\\\\')
-        .replace(/`/g, '\\`')
-        .replace(/\$\{/g, '\\${')
-        .replace(/\r/g, '\\r')
-        .replace(/\n/g, '\\n');
-    case 'html-text':
-      return escapeHtml(text);
-    case 'html-attribute-double':
-      return escapeHtml(text).replace(/"/g, '&quot;');
-    case 'html-attribute-single':
-      return escapeHtml(text).replace(/'/g, '&#39;');
-    case 'yaml-single':
-      if (/[\r\n]/.test(text)) throw new Error('multiline text cannot replace a single-quoted YAML scalar');
-      return text.replace(/'/g, "''");
-    case 'yaml-plain':
-      return /[:#\r\n]|^\s|\s$/.test(text) ? JSON.stringify(text) : text;
-    case 'plain':
-      return text;
-    default:
-      throw new Error('unsupported source representation');
+  if (item.source?.representation !== 'json-string') {
+    throw new Error('unsupported source representation');
   }
+  return JSON.stringify(text).slice(1, -1);
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/{/g, '&#123;')
-    .replace(/}/g, '&#125;');
+function readBackupManifest(file: string): BackupManifest {
+  const value = readJsonStrict<unknown>(file);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid backup manifest: expected an object');
+  }
+  const manifest = value as Record<string, unknown>;
+  if (manifest.schemaVersion !== STATE_SCHEMA_VERSION) {
+    throw new Error('Invalid backup manifest: schemaVersion must be 5');
+  }
+  if (typeof manifest.runId !== 'string' || !manifest.runId) {
+    throw new Error('Invalid backup manifest: runId must be a non-empty string');
+  }
+  if (typeof manifest.scopeDigest !== 'string' || !manifest.scopeDigest) {
+    throw new Error('Invalid backup manifest: scopeDigest must be a non-empty string');
+  }
+  if (
+    !Array.isArray(manifest.files) ||
+    manifest.files.some((file) => typeof file !== 'string')
+  ) {
+    throw new Error('Invalid backup manifest: files must be an array of strings');
+  }
+  return manifest as unknown as BackupManifest;
+}
+
+function confinedBackup(runPath: string, file: string): string {
+  const root = fs.realpathSync(runPath);
+  const abs = path.resolve(root, ...file.split('/'));
+  if (abs !== root && !abs.startsWith(root + path.sep)) {
+    throw new Error('backup path must stay inside the backup run');
+  }
+  let cursor = root;
+  for (const segment of file.split('/')) {
+    cursor = path.join(cursor, segment);
+    const stat = fs.lstatSync(cursor);
+    if (stat.isSymbolicLink()) throw new Error('backup path contains a symbolic link');
+  }
+  const stat = fs.statSync(abs);
+  if (!stat.isFile()) throw new Error(`backup file is not a regular file: ${file}`);
+  const real = fs.realpathSync(abs);
+  if (real !== root && !real.startsWith(root + path.sep)) {
+    throw new Error('backup file resolves outside the backup run');
+  }
+  return abs;
 }
 
 /** Restore the most recent backup run. */
-export function revert(cwd: string, backupDir: string): string[] {
+export function revert(cwd: string, config: LoopConfig, backupDir: string): string[] {
   if (!fs.existsSync(backupDir)) return [];
   const runs = fs
     .readdirSync(backupDir, { withFileTypes: true })
@@ -368,19 +384,55 @@ export function revert(cwd: string, backupDir: string): string[] {
   if (!latest) return [];
 
   const runPath = path.join(backupDir, latest);
-  const restored: string[] = [];
+  const manifestPath = path.join(runPath, 'backup-manifest.json');
+  const manifestStat = fs.lstatSync(manifestPath);
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+    throw new Error('Invalid backup manifest: backup-manifest.json must be a regular file');
+  }
+  const manifest = readBackupManifest(manifestPath);
+  const scope = resolveCatalogueScope(cwd, config);
+  if (manifest.scopeDigest !== scope.scopeDigest) {
+    throw new Error('backup catalogue scope does not match the current catalogue scope');
+  }
 
-  const walkBack = (dir: string) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) { walkBack(full); continue; }
-      const rel = path.relative(runPath, full);
-      fs.mkdirSync(path.dirname(path.join(cwd, rel)), { recursive: true });
-      fs.copyFileSync(full, path.join(cwd, rel));
-      restored.push(rel);
+  const prepared = manifest.files.map((file) => {
+    if (!isCatalogueTarget(scope, file)) {
+      throw new Error(`backup target is outside the current source catalogue: ${file}`);
     }
-  };
+    const target = confinedTarget(cwd, file);
+    const backup = confinedBackup(runPath, file);
+    return {
+      file,
+      target,
+      original: fs.readFileSync(target, 'utf8'),
+      backup: fs.readFileSync(backup, 'utf8'),
+    };
+  });
 
-  walkBack(runPath);
-  return restored;
+  const written: typeof prepared = [];
+  try {
+    for (const entry of prepared) {
+      writeText(entry.target, entry.backup);
+      written.push(entry);
+    }
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    for (const entry of written.reverse()) {
+      try {
+        writeText(entry.target, entry.original);
+      } catch (rollbackError) {
+        rollbackFailures.push(
+          `${entry.file}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        );
+      }
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      rollbackFailures.length
+        ? `atomic revert failed (${reason}); rollback was incomplete: ${rollbackFailures.join('; ')}`
+        : `atomic revert failed and was rolled back: ${reason}`,
+    );
+  }
+
+  return prepared.map((entry) => entry.file);
 }

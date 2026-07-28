@@ -613,7 +613,7 @@ function cmdApply(cwd: string, flags: Flags): void {
 function cmdRevert(cwd: string): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
-  const restored = revert(cwd, p.backups);
+  const restored = revert(cwd, config, p.backups);
   if (!restored.length) {
     log.warn('No backups to restore.');
     return;

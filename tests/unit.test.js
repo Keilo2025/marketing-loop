@@ -460,7 +460,7 @@ test('secure apply uses the approval ledger, exact source span, and representati
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test('secure apply rejects traversal, protected files, and symlink targets', () => {
+test('secure apply rejects traversal and symlink targets', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-confine-'));
   const file = 'messages/en/page.json';
   fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
@@ -485,13 +485,6 @@ test('secure apply rejects traversal, protected files, and symlink targets', () 
   item.file = file;
   proposal.file = file;
   state.decisions.decisions[0].proposalDigest = proposalDigest(proposal, proposal.after);
-  const protectedConfig = { ...state.applyConfig, protectedFiles: [`./${file}`] };
-  results = applyProposals(state.set, {
-    cwd: tmp, config: protectedConfig, backupDir: path.join(tmp, 'bk'),
-    inventory: state.inventory, decisions: state.decisions,
-  });
-  assert.match(results[0].reason, /protected/i);
-
   fs.renameSync(path.join(tmp, file), path.join(tmp, 'messages', 'en', 'real.json'));
   fs.symlinkSync('real.json', path.join(tmp, file));
   results = applyProposals(state.set, {
