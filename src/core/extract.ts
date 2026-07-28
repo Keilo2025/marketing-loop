@@ -73,6 +73,8 @@ export function extractFromFile(
     seen.set(clean, occurrence + 1);
     items.push({
       id: shortHash(relPath, clean, String(occurrence)),
+      catalogueKey: '',
+      sourceLocale: '',
       file: relPath,
       line: lineOf(content, index),
       text: clean,

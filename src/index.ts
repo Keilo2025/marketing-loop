@@ -13,6 +13,16 @@ export { behaviorSubjects, loadBehavior, parseDelimited } from './core/behavior.
 export { renderBrief } from './core/brief.js';
 export { serveCanvas } from './core/canvas.js';
 export { extractFromFile, inferSurface, looksLikeCopy, SCANNABLE } from './core/extract.js';
+export {
+  extractCatalogueFile,
+  inferKindFromKey,
+  inferSurfaceFromKey,
+} from './core/catalogue-extract.js';
+export {
+  catalogueKeyForFile,
+  isCatalogueTarget,
+  resolveCatalogueScope,
+} from './core/catalogue.js';
 export { applyGuardrails, checkProposal } from './core/guardrails.js';
 export { importAgentOutput, parseAgentOutput } from './core/ingest.js';
 export {

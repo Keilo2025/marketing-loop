@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import type { CopyItem, LoopConfig } from '../types.js';
-import { hashText, read, walkDetailed } from '../util/fsx.js';
-import { SCANNABLE, extractFromFile } from './extract.js';
+import { hashText, read } from '../util/fsx.js';
+import { resolveCatalogueScope } from './catalogue.js';
+import { extractCatalogueFile } from './catalogue-extract.js';
 
 export interface ScanResult {
   items: CopyItem[];
+  files: string[];
   filesScanned: number;
   filesWithCopy: number;
   truncated: boolean;
@@ -15,25 +16,15 @@ export interface ScanResult {
 }
 
 export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()): ScanResult {
-  // The data directory holds evidence about the copy, not copy. Scanning it
-  // would let the loop propose rewrites of your own analytics notes.
-  const exclude = [...config.exclude, `${config.dataDir}/`, config.outDir];
-
-  const roots = normalizedRoots(cwd, config.include);
-  const walked = walkDetailed(cwd, { exclude, extensions: SCANNABLE, roots });
-  const files = walked.files.filter(
-    (f) => !config.protectedFiles.includes(f),
-  );
+  const scope = resolveCatalogueScope(cwd, config);
+  const files = scope.files;
 
   const items: CopyItem[] = [];
   const withCopy = new Set<string>();
 
   for (const rel of files) {
     const content = read(path.join(cwd, rel));
-    if (!content) continue;
-    const found = extractFromFile(rel, content);
-    const fileHash = hashText(content);
-    for (const item of found) item.fileHash = fileHash;
+    const found = extractCatalogueFile(rel, content, scope);
     if (found.length) {
       withCopy.add(rel);
       items.push(...found);
@@ -45,9 +36,10 @@ export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()):
 
   return {
     items: unique,
+    files,
     filesScanned: files.length,
     filesWithCopy: withCopy.size,
-    truncated: walked.truncated,
+    truncated: false,
     runId,
     inventoryDigest,
   };
@@ -56,6 +48,9 @@ export function scanRepo(cwd: string, config: LoopConfig, runId = randomUUID()):
 export function digestInventoryItems(items: CopyItem[]): string {
   return hashText(JSON.stringify(items.map((item) => ({
     id: item.id,
+    catalogueKey: item.catalogueKey,
+    sourceLocale: item.sourceLocale,
+    scopeDigest: item.scopeDigest,
     file: item.file,
     line: item.line,
     text: item.text,
@@ -67,22 +62,6 @@ export function digestInventoryItems(items: CopyItem[]): string {
     representation: item.source?.representation,
     applicable: item.source?.applicable,
   }))));
-}
-
-function normalizedRoots(cwd: string, includes: string[]): string[] {
-  const roots = includes.length ? includes : ['.'];
-  const normalized = roots.map((entry) => entry.replace(/\\/g, '/').replace(/^\.\//, '') || '.');
-  if (normalized.includes('.')) return ['.'];
-
-  for (const entry of normalized) {
-    if (path.isAbsolute(entry) || entry === '..' || entry.startsWith('../')) {
-      throw new Error(`include path must stay inside the repository: ${entry}`);
-    }
-    if (!fs.existsSync(path.join(cwd, entry))) {
-      throw new Error(`include path does not exist: ${entry}`);
-    }
-  }
-  return [...new Set(normalized)];
 }
 
 /**

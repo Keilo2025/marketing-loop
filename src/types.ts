@@ -57,8 +57,14 @@ export interface SourceSpan {
 
 /** A single string of user-facing copy located in the codebase. */
 export interface CopyItem {
-  /** Stable id: short hash of file + text + occurrence index. */
+  /** Stable id: short hash of catalogue file + canonical key. */
   id: string;
+  /** Canonical dotted path used by the source message catalogue. */
+  catalogueKey: string;
+  /** Locale that owns this catalogue entry. */
+  sourceLocale: string;
+  /** Digest of the resolved catalogue boundary that produced this entry. */
+  scopeDigest?: string;
   /** Repo-relative path. */
   file: string;
   /** 1-based line number of the string. */
