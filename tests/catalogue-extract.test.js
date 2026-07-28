@@ -34,6 +34,9 @@ test('catalogue extraction preserves canonical keys and exact JSON spans', () =>
 test('key classification is independent from file names', () => {
   assert.equal(inferKindFromKey('common.form.submitButton'), 'cta');
   assert.equal(inferKindFromKey('account.emptyState.noResults'), 'empty-state');
+  assert.equal(inferKindFromKey('search.noResults'), 'empty-state');
+  assert.equal(inferKindFromKey('account.notFound'), 'empty-state');
+  assert.equal(inferKindFromKey('account.search.noResults'), 'empty-state');
   assert.equal(inferSurfaceFromKey('privacy.terms.heading'), 'legal');
   assert.equal(inferSurfaceFromKey('newsletter.subject'), 'email');
 });

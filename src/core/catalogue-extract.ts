@@ -14,9 +14,14 @@ const tokens = (key: string): string[] =>
   key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[._\s-]+/).filter(Boolean);
 
 export function inferKindFromKey(key: string): CopyKind {
-  const parts = new Set(tokens(key));
+  const keyTokens = tokens(key);
+  const parts = new Set(keyTokens);
   if (hasAny(parts, ['error', 'invalid', 'failed', 'failure', 'fail'])) return 'error';
-  if (hasAny(parts, ['empty', 'zero', 'noresults', 'notfound'])) return 'empty-state';
+  if (
+    hasAny(parts, ['empty', 'zero', 'noresults', 'notfound'])
+    || hasSequence(keyTokens, ['no', 'results'])
+    || hasSequence(keyTokens, ['not', 'found'])
+  ) return 'empty-state';
   if (hasAny(parts, ['cta', 'button', 'submit', 'action'])) return 'cta';
   if (hasAny(parts, ['subhead', 'subtitle', 'tagline', 'slogan', 'lead'])) return 'subhead';
   if (hasAny(parts, ['headline', 'heading', 'hero', 'title'])) return 'headline';
@@ -77,6 +82,13 @@ export function extractCatalogueFile(
 
 function hasAny(parts: Set<string>, candidates: string[]): boolean {
   return candidates.some((candidate) => parts.has(candidate));
+}
+
+function hasSequence(parts: string[], sequence: string[]): boolean {
+  return parts.some((_token, start) =>
+    start <= parts.length - sequence.length
+    && sequence.every((token, offset) => parts[start + offset] === token),
+  );
 }
 
 function parseCatalogueStrings(content: string): ParsedString[] {
