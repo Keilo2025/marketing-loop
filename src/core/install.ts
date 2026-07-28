@@ -59,6 +59,21 @@ npx marketing-loop@latest init
 
 Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.**
 
+When language-loop is available, preserve the handoff lifecycle:
+
+\`\`\`bash
+language-loop scan
+language-loop extract
+marketing-loop propose
+marketing-loop review
+marketing-loop apply
+language-loop translate
+language-loop judge
+language-loop apply
+\`\`\`
+
+Without language-loop, marketing-loop remains standalone: configure a source catalogue and run the marketing commands only.
+
 Then fill in two fields with product-owner-approved marketing context:
 
 - \`audience\` — who this is actually for, in plain words
@@ -111,6 +126,8 @@ npx marketing-loop@latest scan
 
 Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** Read \`.marketing-loop/findings.json\`, \`.marketing-loop/inventory.json\`, \`.marketing-loop/brief.md\`, and \`.marketing-loop/behavior.json\`, then write the report.
 
+When language-loop is available, run \`language-loop scan\` and \`language-loop extract\` before this audit. Source edits make translations stale; language-loop translates only after marketing review and apply settle. Marketing-loop never changes target locales.
+
 ## What the source catalogue says
 
 One paragraph grounded only in source-catalogue text, approved claims, behavioural data, and the brief. State unanswered questions instead of inferring product behavior from application code.
@@ -135,6 +152,8 @@ If \`marketing-data/\` was empty, name the single export that would sharpen the 
     name: 'copy-review',
     description: 'Open the human approval canvas for pending copy changes',
     body: `Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** If \`.marketing-loop/agent-output.json\` exists, run \`npx marketing-loop@latest import\` first. Then check that \`.marketing-loop/proposals.json\` has pending proposals. If not, run the marketing-loop command first.
+
+Approved source edits make translations stale. When language-loop is available, run \`language-loop translate\` only after marketing review and apply settle; marketing-loop never changes target locales.
 
 \`\`\`bash
 npx marketing-loop@latest review --ui
@@ -458,6 +477,21 @@ const INSTRUCTIONS = `
 This repository uses [\`marketing-loop\`](https://www.npmjs.com/package/marketing-loop). Any time you are asked to write, improve, or review user-facing copy — headlines, buttons, empty states, error messages, landing pages, pricing, app store text, meta descriptions — run the loop instead of writing copy freehand.
 
 Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** Use only source-catalogue text, \`marketing-loop.config.json\`, \`marketing-data/\`, approved claims, and the generated brief.
+
+When language-loop is available, preserve the handoff lifecycle:
+
+\`\`\`bash
+language-loop scan
+language-loop extract
+marketing-loop propose
+marketing-loop review
+marketing-loop apply
+language-loop translate
+language-loop judge
+language-loop apply
+\`\`\`
+
+Without language-loop, marketing-loop remains standalone: configure a source catalogue and run the marketing commands only.
 
 ### The loop
 

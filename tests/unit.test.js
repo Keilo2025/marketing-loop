@@ -561,6 +561,64 @@ test('installed guidance reads only the source catalogue, never code or target l
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('CLI copy and installed rules describe the catalogue-only handoff', () => {
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const result = spawnSync(process.execPath, [cli, 'help'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const help = result.stdout;
+  assert.match(help, /source messages|source catalogue/i);
+  assert.doesNotMatch(help, /reads your code|write approved changes to your code/i);
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-install-lifecycle-'));
+  try {
+    install(tmp, AGENT_TARGETS.filter((target) => target.id === 'agents-md'));
+    const installedRule = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8');
+    assert.match(installedRule, /language-loop extract[\s\S]*marketing-loop propose/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('CLI init, scan, and status expose the enforced source-catalogue scope', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cli-scope-'));
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const run = (...args) => spawnSync(process.execPath, [cli, ...args, '--cwd', tmp], { encoding: 'utf8' });
+
+  try {
+    fs.mkdirSync(path.join(tmp, 'locales', 'en-US'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'locales', 'en-US', 'hero.json'), '{"hero":{"title":"Welcome"}}\n');
+    fs.writeFileSync(path.join(tmp, 'language-loop.config.json'), JSON.stringify({
+      messagesDir: 'locales', sourceLocale: 'en-US', layout: 'namespaced',
+    }));
+
+    let result = run('init');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Source catalogue: locales .* en-US .* namespaced/);
+    assert.match(result.stdout, /Authoritative scope: language-loop\.config\.json/);
+
+    result = run('scan');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Inspected source files/);
+    assert.match(result.stdout, /locales\/en-US\/hero\.json/);
+
+    fs.mkdirSync(path.join(tmp, '.marketing-loop'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.marketing-loop', 'handoff.json'), JSON.stringify({ unresolved: [{ key: 'hero.title' }] }));
+    result = run('status');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /source locale .* en-US/);
+    assert.match(result.stdout, /catalogue directory .* locales/);
+    assert.match(result.stdout, /catalogue layout .* namespaced/);
+    assert.match(result.stdout, /unresolved handoff .* 1/);
+
+    fs.writeFileSync(path.join(tmp, 'marketing-loop.config.json'), JSON.stringify({ include: ['src'], protectedFiles: ['LICENSE'] }));
+    result = run('status');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stderr + result.stdout, /marketing-loop 0\.5 ignores "include" and "protectedFiles"; source catalogue scope is enforced\./);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 function cursorRuleGlobs(rule) {
   const match = /^globs: (.+)$/m.exec(rule);
   assert.ok(match, 'Cursor rule frontmatter must declare activation globs');
@@ -808,6 +866,17 @@ test('every version number in the repo agrees', () => {
   assert.equal(market.metadata.version, pkg.version, 'marketplace metadata.version is behind');
   assert.equal(market.plugins[0].version, pkg.version, 'marketplace plugins[0].version is behind');
   assert.equal(cliVersion, pkg.version, 'src/cli.ts VERSION is behind');
+});
+
+test('a clean build removes stale obsolete distribution artifacts', () => {
+  const root = path.join(here, '..');
+  const stale = path.join(root, 'dist', 'core', 'product.js');
+  fs.mkdirSync(path.dirname(stale), { recursive: true });
+  fs.writeFileSync(stale, '// stale artifact\n');
+
+  const result = spawnSync('npm', ['run', 'build'], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(stale), false, 'deleted source must not remain in the publishable dist directory');
 });
 
 /* ---------------------------------------------------------------- psychology */

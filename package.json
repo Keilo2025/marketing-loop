@@ -1,7 +1,7 @@
 {
   "name": "marketing-loop",
-  "version": "0.4.0",
-  "description": "A marketing copy loop for vibe-coding agents. Reads your code, works out what the product actually solves, rewrites the copy to sell the outcome instead of the feature, and only ships it after a human approves it on a canvas.",
+  "version": "0.5.0",
+  "description": "A source-catalogue marketing copy loop. It proposes approved copy changes without reading application code or target locales.",
   "type": "module",
   "license": "MIT",
   "author": "Christian Buchholz",
@@ -42,7 +42,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "test": "npm run build && node --test \"tests/**/*.test.js\"",
     "loop": "node dist/cli.js",

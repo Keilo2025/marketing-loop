@@ -10,7 +10,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { CONFIG_FILE, defaultConfig, loadConfig, paths, saveConfig } from './config.js';
+import { CONFIG_FILE, defaultConfig, hasDeprecatedScopeOptions, loadConfig, paths, saveConfig } from './config.js';
 import { analyse, prioritiseDetailed } from './core/analyse.js';
 import { applyProposals, revert } from './core/apply.js';
 import { behaviorSubjects, loadBehavior } from './core/behavior.js';
@@ -48,7 +48,7 @@ import type {
 import { exists, readJsonStrict, writeJson, writeText } from './util/fsx.js';
 import { c, log, table } from './util/log.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 
 interface Flags {
   _: string[];
@@ -118,6 +118,14 @@ function cmdInit(cwd: string, flags: Flags): void {
 
   log.ok(`Created ${c.bold(CONFIG_FILE)}`);
   log.ok(`Created ${c.bold(config.dataDir + '/')} — drop analytics exports here`);
+  try {
+    const scope = resolveCatalogueScope(cwd, config);
+    log.ok(`Source catalogue: ${c.bold(scope.messagesDir)} · ${scope.sourceLocale} · ${scope.layout}`);
+    log.dim(`Authoritative scope: ${exists(path.join(cwd, 'language-loop.config.json')) ? 'language-loop.config.json' : 'marketing-loop.config.json/defaults'}`);
+  } catch (error) {
+    log.warn(`Source catalogue not ready: ${String(error instanceof Error ? error.message : error)}`);
+    log.dim('Create the source catalogue first, or run language-loop extract when language-loop is available.');
+  }
   log.blank();
   log.info('Two things to fill in before your first run:');
   table([
@@ -142,6 +150,7 @@ interface ScanArtefacts {
 }
 
 function runScan(cwd: string): ScanArtefacts {
+  warnDeprecatedScopeOptions(cwd);
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
   rotateActiveRun(p.out);
@@ -228,6 +237,10 @@ function cmdScan(cwd: string, flags: Flags): void {
     ['worth rewriting', String(ranked.length)],
     ['behavior sources', behavior.sourceFiles.length ? behavior.sourceFiles.join(', ') : c.yellow(`none — drop exports in ${config.dataDir}/`)],
   ]);
+
+  log.blank();
+  log.title('Inspected source files');
+  for (const file of catalogueFiles) log.info(`  ${file}`);
 
   if (behavior.problems.length) {
     log.blank();
@@ -333,7 +346,6 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
   log.blank();
   const linked = set.proposals;
   const groups = siblingGroups(linked);
-  const localised = groups.filter((g) => g.locales.length > 1);
 
   log.ok(`${linked.length} proposals ready`);
   reportOutOfScope(outOfScope, config);
@@ -346,13 +358,6 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
     );
   }
 
-  if (localised.length) {
-    log.blank();
-    log.warn(
-      `${localised.length} string${localised.length === 1 ? ' appears' : 's appear'} identically in several locale bundles.`,
-    );
-    log.dim('That usually means those locales were never translated. Fixing the copy does not fix that.');
-  }
   if (blocked.length) {
     log.warn(`${blocked.length} blocked by guardrails:`);
     for (const b of blocked.slice(0, 5)) {
@@ -719,9 +724,13 @@ function cmdUninstall(cwd: string, flags: Flags): void {
 /* ----------------------------------------------------------------- status */
 
 function cmdStatus(cwd: string): void {
+  warnDeprecatedScopeOptions(cwd);
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
   const set = exists(p.proposals) ? readJsonStrict<ProposalSet>(p.proposals) : null;
+  const handoff = exists(p.handoff) ? readJsonStrict<{ unresolved?: unknown[] }>(p.handoff) : null;
+  let scope: ReturnType<typeof resolveCatalogueScope> | null = null;
+  try { scope = resolveCatalogueScope(cwd, config); } catch { /* status remains useful before extraction */ }
 
   log.title('marketing-loop status');
   table([
@@ -729,6 +738,10 @@ function cmdStatus(cwd: string): void {
     ['data', exists(p.data) ? c.green(config.dataDir + '/') : c.yellow('none')],
     ['inventory', exists(p.inventory) ? c.green('yes') : c.grey('not scanned')],
     ['brief', exists(p.brief) ? c.green(path.join(config.outDir, 'brief.md')) : c.grey('none')],
+    ['source locale', scope?.sourceLocale ?? c.yellow('unresolved')],
+    ['catalogue directory', scope?.messagesDir ?? c.yellow('unresolved')],
+    ['catalogue layout', scope?.layout ?? c.yellow('unresolved')],
+    ['unresolved handoff', String(handoff?.unresolved?.length ?? 0)],
   ]);
 
   if (set) {
@@ -773,7 +786,7 @@ ${c.bold('Commands')}
     --agents a,b       pick specific ones
 
   ${c.cyan('init')}               create marketing-loop.config.json
-  ${c.cyan('scan')}               find and diagnose every user-facing string
+  ${c.cyan('scan')}               inspect every configured source catalogue message
   ${c.cyan('propose')}            generate rewrites + the agent brief
     --llm              also ask an API model (needs ANTHROPIC_API_KEY or OPENAI_API_KEY)
     --max 30           cap the number of proposals
@@ -783,7 +796,7 @@ ${c.bold('Commands')}
     --ui               open the approval canvas in a browser instead
     --port 7788        canvas port
     --collect          read ticked decisions back out of review.md
-  ${c.cyan('apply')}              write approved changes to your code
+  ${c.cyan('apply')}              write approved changes to the source catalogue
     --dry-run          show what would change
   ${c.cyan('revert')}             restore the last applied run
   ${c.cyan('status')}             where the loop currently stands
@@ -802,6 +815,12 @@ ${c.bold('Inside a coding agent')}
   Run ${c.cyan('propose')}, then point the agent at ${c.cyan('.marketing-loop/brief.md')}.
   The agent writes agent-output.json; import validates it, then a human approves it.
 `);
+}
+
+function warnDeprecatedScopeOptions(cwd: string): void {
+  if (hasDeprecatedScopeOptions(cwd)) {
+    log.warn('marketing-loop 0.5 ignores "include" and "protectedFiles"; source catalogue scope is enforced.');
+  }
 }
 
 /* ----------------------------------------------------------------- helpers */

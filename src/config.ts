@@ -59,6 +59,17 @@ export function loadConfig(cwd: string): LoopConfig {
   return validateConfig(raw, file);
 }
 
+/** Legacy scanner settings are accepted for migration, but never affect scope. */
+export function hasDeprecatedScopeOptions(cwd: string): boolean {
+  const file = path.join(cwd, CONFIG_FILE);
+  if (!exists(file)) return false;
+  const raw = readJsonStrict<unknown>(file);
+  return Boolean(
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+    && ('include' in raw || 'protectedFiles' in raw),
+  );
+}
+
 export function validateConfig(raw: unknown, file = CONFIG_FILE): LoopConfig {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(`Invalid ${file}: configuration must be an object`);
@@ -183,7 +194,8 @@ export function validateConfig(raw: unknown, file = CONFIG_FILE): LoopConfig {
 
 export function saveConfig(cwd: string, config: LoopConfig): string {
   const file = path.join(cwd, CONFIG_FILE);
-  writeJson(file, config);
+  const { include: _include, protectedFiles: _protectedFiles, ...catalogueConfig } = config;
+  writeJson(file, catalogueConfig);
   return file;
 }
 

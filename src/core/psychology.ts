@@ -21,7 +21,7 @@ export interface Principle {
   honestUse: string;
   /** The version that turns into a dark pattern. Never generate this. */
   abuse: string;
-  /** Copy patterns. `{}` slots get filled from the product model. */
+  /** Copy patterns. `{}` slots are filled from source-catalogue context. */
   patterns: string[];
   /** Provenance, so a human can go read the source. */
   source: string;

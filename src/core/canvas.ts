@@ -6,7 +6,7 @@
  * in one place. Nothing is written to the repo until the Apply button is
  * pressed, and Apply only ever touches approved rows.
  *
- * Bound to 127.0.0.1. It reads and writes your source code — it does not
+ * Bound to 127.0.0.1. It reads and writes approved source-catalogue messages — it does not
  * belong on a network interface.
  */
 
@@ -530,7 +530,7 @@ function paintCard(p) {
 /**
  * Ask before carrying a decision to identical strings elsewhere. Never assume:
  * the whole point of this tool is that a person saw each change before it
- * reached the code, and silently approving eleven files on one click would
+ * reached the source catalogue, and silently approving eleven files on one click would
  * throw that away for the sake of a click.
  */
 function offerFanout(p) {

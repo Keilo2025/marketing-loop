@@ -1,30 +1,25 @@
 ---
-description: Open the approval canvas so a human can approve, edit or reject the proposed copy changes
+description: Open human review for pending source-catalogue copy changes
 argument-hint: "[optional: --port 7788]"
 allowed-tools: Bash, Read
 ---
 
-If `.marketing-loop/agent-output.json` exists, run `npx marketing-loop@latest import` first. Then check that `.marketing-loop/proposals.json` has pending proposals. If it does not, run `/marketing-loop` first.
+Marketing-loop reads only the configured source catalogue and never changes application code or target locales.
 
-Then open the canvas:
+If `.marketing-loop/agent-output.json` exists, run `npx marketing-loop@latest import`. Then open review:
 
 ```bash
 npx marketing-loop@latest review --ui $ARGUMENTS
 ```
 
-Tell the user:
+Tell the user the URL, that the rewrite is editable, and that no source-catalogue change is written until they approve and explicitly run `apply`. Approved source edits make translations stale; when language-loop is available, run translation only after these marketing decisions settle.
 
-- the URL it is serving on
-- that every proposal shows the current copy, the rewrite, the reasoning and the evidence, and that the rewrite box is editable — whatever they type wins
-- keyboard shortcuts: `j`/`k` to move, `a` to approve, `r` to reject
-- that nothing is written to their code until they press **Apply**, and that `npx marketing-loop revert` undoes the last run
-
-If they would rather not open a browser, offer the markdown route instead:
+For markdown review:
 
 ```bash
-npx marketing-loop@latest review          # writes review.md with tick boxes
-npx marketing-loop@latest review --collect # reads their ticks back
+npx marketing-loop@latest review
+npx marketing-loop@latest review --collect
 npx marketing-loop@latest apply
 ```
 
-Do not approve anything on their behalf.
+Do not approve changes or edit target locales on the user's behalf.

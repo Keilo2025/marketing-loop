@@ -1,424 +1,82 @@
 # marketing-loop
 
-**A marketing copy loop for vibe-coding agents.** It reads your code, works out what the product actually solves, rewrites the copy to sell *that* instead of the feature — and ships nothing until a human approves it.
+`marketing-loop` is a human-approved marketing-copy producer for a configured source catalogue. It diagnoses and proposes changes only in the source catalogue; it never reads or changes application code or target locales.
 
-Works in Claude Code, Cursor, Codex, Windsurf, Cline, Copilot and everything else that reads `AGENTS.md`. Also works on its own, from the terminal, with no agent at all.
+## Use it standalone
 
-```bash
-npx marketing-loop install    # wire it into every agent in this repo
-npx marketing-loop init       # create the config
-npx marketing-loop scan       # find and diagnose every user-facing string
-npx marketing-loop propose    # rewrite what can be proven; brief the agent on the rest
-npx marketing-loop review --ui  # a human approves, on a canvas
-npx marketing-loop apply      # write only what they approved
-```
-
----
-
-## The problem it fixes
-
-Ask any coding agent to write your landing page and you get this:
-
-> **Advanced analytics dashboard with real-time sync**
-> Our powerful platform empowers teams to leverage cutting-edge insights.
-> `[ Get Started ]`
-
-Every word is about the software. Nobody wakes up wanting a dashboard. They wake up not knowing whether last week was good or bad, and hating that feeling.
-
-The agent wrote it that way because it was working from a feature list. It never read the code, so it had nothing concrete to say — and vague is the only place to go when you have no facts.
-
-`marketing-loop` reads the implementation first:
-
-> **Find out your deploy broke in 4 minutes, not after lunch**
-> Watches every deploy across your pipeline and tells you the moment one fails.
-> `[ Get my free deployment audit ]`
-
-Same product. The difference is that every claim came out of a file.
-
----
-
-## How it works
-
-```
-   your codebase                marketing-data/
-        │                            │
-        ▼                            ▼
-   ┌─────────┐                 ┌──────────┐
-   │  scan   │  strings +      │ behavior │  funnels, drop-off,
-   │         │  product model  │          │  CTR, your own notes
-   └────┬────┘                 └────┬─────┘
-        └──────────┬────────────────┘
-                   ▼
-             ┌──────────┐
-             │ diagnose │  15 rules · ranked by what a fix is worth
-             └────┬─────┘
-                  ▼
-             ┌──────────┐        ┌───────────────┐
-             │ propose  │───────▶│   brief.md    │──▶ your coding agent
-             │ (engine) │        │  (open items) │    writes agent-output.json
-             └────┬─────┘        └───────┬───────┘
-                  │◀──── validated import ───────┘
-                  ▼
-            ┌────────────┐
-            │ guardrails │  dark patterns and invented facts stop here
-            └─────┬──────┘
-                  ▼
-            ┌────────────┐
-            │   HUMAN    │  canvas or markdown — approve, edit, reject
-            └─────┬──────┘
-                  ▼
-            ┌────────────┐
-            │   apply    │  exact-match replace · backup · one-command revert
-            └────────────┘
-```
-
-### 1. It reads the code, not the README
-
-`scan` builds a product model from what is actually there: routes, API surface, feature directories, dependencies, pricing tiers, integrations. Then it finds every user-facing string across JSX, TSX, HTML, Vue, Svelte, Astro, Markdown, MDX, JSON i18n bundles and YAML — and works out what each one *is*: a headline, a CTA, an empty state, an error, a meta description.
-
-No AST. Vibe-coded repos do not always parse, and a parser that throws gives you nothing.
-
-### 2. It diagnoses, then ranks
-
-Fifteen rules, each pointed at a specific failure: `generic-cta`, `feature-not-benefit`, `company-centric`, `hype-vocabulary`, `no-problem-named`, `unhelpful-error`, `dead-empty-state`, and so on. Full list in [`skills/marketing-loop/references/diagnostics.md`](skills/marketing-loop/references/diagnostics.md).
-
-Ranking is weighted by severity, by kind (a CTA beats a nav link), by surface (landing beats docs) — and heavily by whatever your behavioural data pointed at.
-
-### 3. You feed it behaviour
-
-Drop exports into `marketing-data/`. No API keys, no OAuth, no vendor lock-in.
-
-```
-marketing-data/
-├── ga4-landing.csv        # any export with a label column and a metric column
-├── posthog-funnel.csv     # ordered funnels get drop-off computed automatically
-├── amplitude-events.json  # arrays, or { results: [...] }
-└── notes.md               # "support gets three 'what does this do' emails a week"
-```
-
-Column names are matched loosely, so most exports work untouched. Filenames identify the source.
-
-`notes.md` is the least sophisticated input here and often the most useful. One line per observation, and it lands in the brief verbatim.
-
-### 4. It proposes — carefully
-
-The deterministic engine only makes changes it can justify from text already in the repo. It rewrites generic CTAs by borrowing the deliverable from the heading above them, strips hype, flips company-first sentences to reader-first, splits overlong headlines.
-
-**It will not invent a fact.** No user counts, no percentages, no guarantees. If a rewrite would need one, the string becomes an *open item* instead.
-
-It is also careful about the small things that give machine-written copy away. Deleting "robust" from "a robust API" leaves "a API"; the engine fixes the article. Stripping "We help teams" from "We help teams monitor their deployments" leaves a dangling "their"; the engine refuses the rewrite and hands it to a model with judgement.
-
-### 5. Your agent does the hard half
-
-`propose` writes `.marketing-loop/brief.md`: the product model, the behavioural evidence, the voice constraints, the persuasion library, the open items, and the exact output schema.
-
-**This is what makes it work inside a coding agent with no API key.** The CLI is the harness; your agent is the model. It reads the brief, opens the code behind each claim, and writes only `.marketing-loop/agent-output.json`. Run `npx marketing-loop import` to validate and canonicalize that untrusted output into `proposals.json`; model-written paths, statuses, ids, and source text are never trusted.
-
-Standalone? `--llm` uses `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead. The approval gate applies either way.
-
-### 6. Guardrails run before a human sees anything
-
-Blocked outright: fabricated urgency, fake scarcity, confirmshaming, hidden auto-renewal, decline options framed as mistakes, health and financial outcome promises.
-
-Blocked outright too: **any number that appears in the new copy but not in the old copy or your `allowedClaims`**. Model-written evidence cannot vouch for its own claim. Unprovable superlatives and banned vocabulary remain visible warnings for the reviewer.
-
-### 7. A human approves. Always.
+Configure a source catalogue in `marketing-loop.config.json` (or use the default `messages/en.json`), then run:
 
 ```bash
+npx marketing-loop init
+npx marketing-loop scan
+npx marketing-loop propose
 npx marketing-loop review --ui
-```
-
-A local page, `127.0.0.1`, no dependencies. Each launch uses a secret URL token; mutation requests are same-origin and JSON-only. Every proposal shows the current copy, the rewrite, alternatives, the reasoning, the psychology principles and the evidence. The rewrite box is editable — whatever you type wins. `j`/`k` to move, `a` to approve, `r` to reject.
-
-Each proposal card shows:
-
-- **Kind & location** — `subhead` in `messages/en/marketing.json:1005`
-- **Confidence** — 70% means the engine is fairly sure, but a human should verify
-- **Principles applied** — which persuasion techniques this rewrite uses
-- **The change** — side-by-side diff with the reasoning below
-- **Edit box** — rewrite it further if you want; whatever you approve gets applied
-- **Approve/Reject** — only approved copy reaches the code
-
-Example:
-
-```
-NOW                                    PROPOSED — EDIT FREELY
-Generate comprehensive financial      Generate comprehensive financial
-reports, analyze spending patterns,   reports, analyze spending patterns,
-and make data-driven decisions with   and make data-driven decisions with
-powerful insights.                     insights.
-
-Why. Removed "powerful". Words that cannot be disproved are also words that 
-cannot be believed, and readers discount the sentence around them. What is left 
-is shorter and checkable.
-
-Problem it solves. Unfalsifiable adjectives were doing the work that a fact 
-should be doing, so the whole claim read as marketing rather than information.
-```
-
-Prefer not to open a browser?
-
-```bash
-npx marketing-loop review            # writes review.md with tick boxes
-npx marketing-loop review --collect  # reads your ticks back
-```
-
-Works over SSH, in a PR diff, on a phone.
-
-#### Repeated strings are one decision, not forty
-
-A localised app has the same string in every message bundle. Rather than make you approve `messages/en/`, `messages/tr/`, `messages/uk/` and nine more separately, the loop links proposals making the *identical* change to the *identical* string and offers to carry your decision:
-
-```
-3 other files make the identical change. Approve those too?
-  messages/tr/marketing.json:189
-  messages/uk/marketing.json:189
-  messages/de/marketing.json:189
-
-[ Approve all 4 ]  [ Just this one ]
-```
-
-In `review.md` it is a checkbox on the block:
-
-```
-- [x] APPROVE
-- [ ] REJECT
-- [x] SAME DECISION FOR ALL IDENTICAL COPIES (3 others)
-```
-
-Two rules make this safe to use:
-
-- **It never fans out on its own.** One click changes one file unless you say otherwise. Bulk approval that happens without asking would defeat the point of having a gate.
-- **An explicit decision always wins.** Reject the Ukrainian one, then approve-all from the English one, and the Ukrainian stays rejected. Fan-out only reaches proposals you have not ruled on.
-
-Grouping is strict — same original text, same replacement, same kind. Two buttons that both say `Submit` but are being rewritten differently are *not* siblings, and approving one will never drag in wording you were not shown.
-
-#### It will tell you when your translations are stale
-
-If the same English string turns up in `messages/tr/` and `messages/uk/`, those locales were never translated. The loop says so:
-
-> **Translation.** This string is identical across 4 locales (de, en, tr, uk). Untranslated source text in de, tr, uk — applying this fixes the English but those bundles still need re-translating.
-
-Worth knowing before you approve twelve files: fixing the copy does not fix the translation, and the fan-out is now propagating better English into bundles that should not contain English at all.
-
-### 8. Apply is paranoid
-
-Approval is a separate ledger bound to the exact run, inventory, proposal, and final text by SHA-256 digests. Apply verifies the complete file hash and exact source span, rejects traversal, protected files and symlinks, then encodes the replacement for JSON, JavaScript, HTML, Markdown, or YAML. The whole batch is preflighted before any write; if one target is stale, nothing changes. Every touched file is backed up first.
-
-```bash
-npx marketing-loop apply --dry-run   # see it first
 npx marketing-loop apply
-npx marketing-loop revert            # undo the last run
 ```
 
-Writes use temp-file replacement and rollback on failure. Prior run state is archived under `.marketing-loop/history/<runId>/`.
+`scan` lists every inspected source file. `status` reports the source locale, catalogue directory, layout, and unresolved handoff count. `apply` changes only human-approved source messages; `revert` restores the last source-catalogue apply.
 
----
+## Use it with language-loop
 
-## Install
-
-### As an npm CLI
+When `language-loop` is available, it owns extraction and translation. Follow this lifecycle exactly:
 
 ```bash
-npx marketing-loop install     # no install needed, or:
-npm i -g marketing-loop
+language-loop scan
+language-loop extract
+marketing-loop propose
+marketing-loop review
+marketing-loop apply
+language-loop translate
+language-loop judge
+language-loop apply
 ```
 
-`install` detects the agents already in your repo and writes their config. `--all` writes every one, `--list` shows the ids.
+`language-loop extract` moves hardcoded text into the source catalogue before marketing work. Once marketing edits are approved, translations are stale. Run `language-loop translate` only after marketing decisions have settled. Marketing-loop never rewrites target locales or application code.
 
-### Slash commands
+## Workflow
 
-Agents that support invokable commands get three, so you can type `/` and pick one instead of remembering the CLI:
+`propose` creates `.marketing-loop/brief.md` and candidate rewrites. Use only source-catalogue text, `marketing-data/`, `allowedClaims`, and the brief when completing open items. An agent writes only `.marketing-loop/agent-output.json`; `import` validates it before the human review gate.
 
-| command | what it does |
-| --- | --- |
-| `/marketing-loop` | run the whole loop, agent writes the hard rewrites |
-| `/copy-audit` | report what your copy is costing you, no changes |
-| `/copy-review` | open the approval canvas |
-
-| agent | command directory |
-| --- | --- |
-| Cursor | `.cursor/commands/` |
-| Windsurf | `.windsurf/workflows/` |
-| Cline | `.clinerules/workflows/` |
-| Claude Code | via the plugin |
-
-For agents with no command directory — Codex, Copilot, Gemini CLI, Aider and the rest — say "run the marketing loop" and the rule file below tells them what to do.
-
-### Rules
-
-Rules are background context, not something you invoke. Every agent gets one.
-
-| agent | file |
-| --- | --- |
-| Codex, Cursor, Copilot, Gemini CLI, Aider, Amp, OpenCode, Zed, Windsurf, Jules | `AGENTS.md` |
-| Claude Code | `CLAUDE.md` (or install the plugin — better) |
-| Cursor | `.cursor/rules/marketing-loop.mdc` |
-| Windsurf | `.windsurf/rules/marketing-loop.md` |
-| Cline | `.clinerules/marketing-loop.md` |
-| Roo Code | `.roo/rules/marketing-loop.md` |
-| Kilo Code | `.kilocode/rules/marketing-loop.md` |
-| GitHub Copilot | `.github/instructions/marketing-loop.instructions.md` |
-| Gemini CLI | `GEMINI.md` |
-| Continue | `.continue/rules/marketing-loop.md` |
-| Junie (JetBrains) | `.junie/guidelines.md` |
-| Trae | `.trae/rules/project_rules.md` |
-| Zed | `.rules` |
-| Aider | `CONVENTIONS.md` |
-| OpenCode | `.opencode/marketing-loop.md` |
-
-Everything is written between `<!-- marketing-loop:start -->` markers, so re-running updates in place and `npx marketing-loop uninstall` removes it cleanly.
-
-### As a Claude Code plugin
-
-```
-/plugin marketplace add keilo2000/marketing-loop
-/plugin install marketing-loop@marketing-loop
+```bash
+npx marketing-loop import
+npx marketing-loop review --ui
+npx marketing-loop apply
 ```
 
-You get:
-
-- **`/marketing-loop`** — run the whole loop, with the agent writing the hard rewrites
-- **`/copy-audit`** — a report on what your copy is costing you, no changes made
-- **`/copy-review`** — open the approval canvas
-- **`marketing-loop` skill** — triggers automatically whenever you ask for copy
-- **`copy-strategist` subagent** — a conversion copywriter that reads code before writing
-
----
+Every source edit is bound to the active catalogue inventory and a human approval decision. The apply step rejects stale, redirected, or forged targets and records a handoff containing only pending and approved source keys.
 
 ## Configuration
 
-`marketing-loop.config.json`:
-
-```jsonc
+```json
 {
-  "dataDir": "marketing-data",
-  "audience": "engineering teams shipping daily who have no idea when a deploy breaks",
-
-  // Facts the copy is cleared to state. Anything else is off limits.
-  "allowedClaims": [
-    "Free tier, no card required",
-    "Used by 40 engineering teams",
-    "Detects failures in under 4 minutes"
-  ],
-
-  "voice": {
-    "tone": "plain, confident, specific — no hype, no exclamation marks",
-    "person": "second",
-    "readingLevel": "grade 7",
-    "banned": ["revolutionary", "seamless", "leverage", "unlock"],
-    "required": []
+  "catalogue": {
+    "messagesDir": "messages",
+    "sourceLocale": "en",
+    "layout": "single-file"
   },
-
-  // Which surfaces may be rewritten. Legal and internal are scanned and
-  // reported but never proposed on unless you add them here.
-  "surfaces": ["landing", "store", "email", "app"],
-
-  "disabledPrinciples": ["scarcity-honest"],  // switch off techniques you never want used
-  "protectedFiles": ["LICENSE", "CHANGELOG.md"],
-  "maxProposals": 60
+  "dataDir": "marketing-data",
+  "audience": "",
+  "allowedClaims": [],
+  "surfaces": ["landing", "store", "email", "app"]
 }
 ```
 
-**`allowedClaims` is the important one.** It is the list of things the loop is permitted to assert. Leave it empty and the copy cannot make a single external claim — which is the correct default, and the reason this tool does not hallucinate testimonials.
+If `language-loop.config.json` exists, its `messagesDir`, `sourceLocale`, and `layout` are authoritative. Marketing-loop refuses a disagreement. Older `include` and `protectedFiles` settings are accepted for migration but ignored: source-catalogue scope is enforced.
 
-### Surfaces — why your terms of service is left alone
+## Install guidance for agents
 
-Every string in a repo is not marketing copy. Your privacy policy has passive voice; that finding is true and useless. Worse, a tool that rewrites an indemnity clause to convert better has created a legal problem, not a conversion win.
-
-So each file gets a surface, and only some are in scope:
-
-| surface | in scope by default | what lands here |
-| --- | --- | --- |
-| `landing` | yes | marketing pages, pricing, signup, onboarding |
-| `store` | yes | App Store / Play Store listings and metadata |
-| `email` | yes | transactional and lifecycle email templates |
-| `app` | yes | in-product copy, empty states, errors |
-| `docs` | **no** | guides, handbooks, READMEs |
-| `legal` | **no** | terms, privacy, GDPR, cookie, EULA, refund policy |
-| `internal` | **no** | ADRs, RFCs, changelogs, planning notes, agent rules files |
-
-Out-of-scope strings are still scanned and counted — you just get told, rather than getting forty proposals to rewrite your ToS headings:
-
-```
-7 strings skipped as out of scope: 3 docs · 4 legal
-Legal text is never rewritten by default — persuasive terms of service are a liability.
+```bash
+npx marketing-loop install
 ```
 
-If your docs genuinely are the funnel, opt them in:
-
-```json
-"surfaces": ["landing", "store", "email", "app", "docs"]
-```
-
-### maxProposals covers the whole review
-
-`maxProposals` is the cap on the *entire* review, not just the mechanical rewrites. The budget splits roughly 60/40 between the engine and the open items handed to your agent, so a full engine run can never crowd out the headline and CTA work — which is the half that actually moves a funnel.
-
----
-
-## The persuasion library
-
-26 documented principles, each with its mechanism, where it belongs, the honest application, the version that turns it into a dark pattern, and a source you can go read.
-
-`outcome-framing` · `problem-agitate-solve` · `before-after-bridge` · `loss-aversion` · `specificity` · `social-proof` · `authority` · `risk-reversal` · `anchoring` · `decoy-effect` · `cognitive-fluency` · `curiosity-gap` · `goal-gradient` · `zeigarnik` · `commitment-consistency` · `reciprocity` · `labor-illusion` · `peak-end` · `hicks-law` · `von-restorff` · `status-quo-default` · `negativity-bias` · `endowment` · `fresh-start` · `scarcity-honest` · `unity`
-
-Full reference: [`skills/marketing-loop/references/psychology.md`](skills/marketing-loop/references/psychology.md)
-
-The abuse cases are written down on purpose — the guardrails use them. Every dark pattern in that list converts in the short run, and every one of them costs more than it earns once you count refunds, chargebacks, review scores and the people who never come back. That is a business argument, not a lecture.
-
----
-
-## Programmatic use
-
-```ts
-import { scanRepo, analyse, propose, applyGuardrails, loadConfig } from 'marketing-loop';
-
-const config = loadConfig(process.cwd());
-const { items } = scanRepo(process.cwd(), config);
-const findings = analyse(items, product, config);
-const { kept, blocked } = applyGuardrails(proposals, config);
-```
-
-Every stage is exported, so the loop drops into CI, a git hook, or an MCP server. The approval gate is the one thing you should not automate away.
-
----
-
-## FAQ
-
-**Does it need an API key?**
-No. Inside a coding agent, the agent is the model — it reads `brief.md`. The `--llm` flag exists for unattended runs.
-
-**Will it edit my code without asking?**
-No. Agent output cannot approve itself. `apply` requires a human decision whose digest matches the exact proposal and final text, and `revert` restores the last backup.
-
-**Does my code or data get uploaded?**
-Not by default. Everything is local. With `--llm`, the brief — which includes aggregate figures from `marketing-data/` — goes to that API. Keep raw user-level exports out of the folder.
-
-**I typed `marketing-loop` in Cursor and nothing came up.**
-Two different things share the name. `npx marketing-loop` is the CLI, run from a terminal. `/marketing-loop` — with the slash — is the Cursor command, and it only exists after you run `npx marketing-loop install` in that repo. Rules alone will not show up in any menu; they are passive context.
-
-**My review is full of legal headings and internal docs.**
-Update to 0.3.0. Before that, every Markdown file in the repo was fair game. Now `legal`, `internal` and `docs` are out of scope by default — see [Surfaces](#surfaces--why-your-terms-of-service-is-left-alone).
-
-**It missed strings in my repo.**
-The extractor is conservative on purpose; false positives waste more of your time than false negatives. Add directories to `include`, or move copy into a JSON or Markdown content file where it is unambiguous.
-
-**Why is one string still flagged after I fixed it?**
-The loop is meant to be run repeatedly. A headline that was too long *and* full of hype gets the hype removed on the first pass and the length flagged on the next. Run it again after applying.
-
-**It suggested something that is not true about my product.**
-That is a bug, and worth an issue. Agent output is canonicalized against the active inventory, and unsourced numbers are blocked before review. A false non-numeric claim should still be reported.
-
----
+The installed skill, commands, and agent guidance follow the same constraint: source catalogue only; no application-code or target-locale access. They document both the standalone workflow and the optional language-loop lifecycle above.
 
 ## Development
 
 ```bash
 npm install
-npm run build
-npm test          # unit, security, canvas, and end-to-end workflow tests
-node dist/cli.js scan --cwd tests/fixture
+npm test
+npm pack --dry-run
 ```
 
 MIT.
