@@ -26,7 +26,7 @@ import { ACTIVE_STATE_SCHEMA_ERROR, STATE_SCHEMA_VERSION } from '../types.js';
 import { hashText, readJsonStrict, writeJson, writeText } from '../util/fsx.js';
 import { checkProposal } from './guardrails.js';
 import { digestInventoryItems } from './scan.js';
-import { validateDecisionSet } from './state.js';
+import { isSafeRunId, validateDecisionSet } from './state.js';
 import { isCatalogueTarget, resolveCatalogueScope } from './catalogue.js';
 
 export interface ApplyOptions {
@@ -103,6 +103,9 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
   }
   const decisionErrors = validateDecisionSet(set, decisions);
   if (decisionErrors.length) return failAll(decisionErrors.join('; '));
+  if (!isSafeRunId(set.runId)) {
+    return failAll('active proposal run has an unsafe runId');
+  }
   if (!authorized.length) return [];
 
   const itemById = new Map(inventory.items.map((item) => [item.id, item]));
@@ -230,10 +233,12 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
 
   if (opts.dryRun) return results.map((result) => ({ ...result, ok: true }));
 
-  const runDir = path.join(
-    opts.backupDir,
-    `${new Date().toISOString().replace(/[:.]/g, '-')}-${set.runId as string}`,
-  );
+  let runDir: string;
+  try {
+    runDir = createBackupRunDir(opts.cwd, opts.backupDir, set.runId);
+  } catch (error) {
+    return failAll(error instanceof Error ? error.message : String(error));
+  }
   const realRoot = fs.realpathSync(opts.cwd);
   const written: string[] = [];
   try {
@@ -326,26 +331,133 @@ function encodeReplacement(item: CopyItem, text: string): string {
   return JSON.stringify(text).slice(1, -1);
 }
 
-function readBackupManifest(file: string): BackupManifest {
+function ensureDirectoryWithoutSymlinks(
+  cwd: string,
+  directory: string,
+  createMissing: boolean,
+): string {
+  const configuredRoot = path.resolve(cwd);
+  const configuredTarget = path.resolve(configuredRoot, directory);
+  const relative = path.relative(configuredRoot, configuredTarget);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('backup directory must stay inside the repository');
+  }
+
+  const realRoot = fs.realpathSync(cwd);
+  let current = realRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink()) {
+        throw new Error('backup directory path contains a symbolic link');
+      }
+      if (!stat.isDirectory()) {
+        throw new Error('backup directory path contains a non-directory');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!createMissing) throw error;
+      fs.mkdirSync(current, { mode: 0o700 });
+    }
+  }
+  const real = fs.realpathSync(current);
+  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) {
+    throw new Error('backup directory resolves outside the repository');
+  }
+  return real;
+}
+
+function createBackupRunDir(cwd: string, backupDir: string, runId: string): string {
+  if (!isSafeRunId(runId)) throw new Error('active proposal run has an unsafe runId');
+  const root = ensureDirectoryWithoutSymlinks(cwd, backupDir, true);
+  const name = `${new Date().toISOString().replace(/[:.]/g, '-')}-${runId}`;
+  const candidate = path.join(root, name);
+  const relative = path.relative(root, candidate);
+  if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('backup run directory must stay inside backupDir');
+  }
+  fs.mkdirSync(candidate, { mode: 0o700 });
+  const stat = fs.lstatSync(candidate);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('backup run directory must be a real directory');
+  }
+  const real = fs.realpathSync(candidate);
+  if (!real.startsWith(root + path.sep)) {
+    throw new Error('backup run directory resolves outside backupDir');
+  }
+  return real;
+}
+
+function isCanonicalCataloguePath(file: string): boolean {
+  return (
+    file.length > 0 &&
+    !file.includes('\\') &&
+    !file.includes('\0') &&
+    !path.posix.isAbsolute(file) &&
+    !/^[A-Za-z]:\//.test(file) &&
+    !file.startsWith('./') &&
+    !file.endsWith('/') &&
+    path.posix.normalize(file) === file &&
+    file.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+  );
+}
+
+function runIdFromBackupDirectory(directory: string): string {
+  const match = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-(.+)$/.exec(directory);
+  const runId = match?.[1];
+  if (!isSafeRunId(runId)) {
+    throw new Error('Invalid backup manifest: backup directory has an unsafe runId');
+  }
+  return runId;
+}
+
+function readBackupManifest(file: string, backupDirectory: string): BackupManifest {
   const value = readJsonStrict<unknown>(file);
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Invalid backup manifest: expected an object');
   }
   const manifest = value as Record<string, unknown>;
+  const keys = Object.keys(manifest).sort();
+  const expectedKeys = ['files', 'runId', 'schemaVersion', 'scopeDigest'];
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    throw new Error(
+      'Invalid backup manifest: expected exactly schemaVersion, runId, scopeDigest, and files',
+    );
+  }
   if (manifest.schemaVersion !== STATE_SCHEMA_VERSION) {
     throw new Error('Invalid backup manifest: schemaVersion must be 5');
   }
-  if (typeof manifest.runId !== 'string' || !manifest.runId) {
-    throw new Error('Invalid backup manifest: runId must be a non-empty string');
+  if (!isSafeRunId(manifest.runId)) {
+    throw new Error('Invalid backup manifest: unsafe runId');
   }
-  if (typeof manifest.scopeDigest !== 'string' || !manifest.scopeDigest) {
-    throw new Error('Invalid backup manifest: scopeDigest must be a non-empty string');
+  if (manifest.runId !== runIdFromBackupDirectory(backupDirectory)) {
+    throw new Error('Invalid backup manifest: runId does not match the selected backup directory');
+  }
+  if (
+    typeof manifest.scopeDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(manifest.scopeDigest)
+  ) {
+    throw new Error('Invalid backup manifest: scopeDigest must be a SHA-256 digest');
   }
   if (
     !Array.isArray(manifest.files) ||
     manifest.files.some((file) => typeof file !== 'string')
   ) {
     throw new Error('Invalid backup manifest: files must be an array of strings');
+  }
+  const files = manifest.files as string[];
+  if (files.length === 0) {
+    throw new Error('Invalid backup manifest: files must be a non-empty array');
+  }
+  if (new Set(files).size !== files.length) {
+    throw new Error('Invalid backup manifest: files must contain unique paths');
+  }
+  if (files.some((entry) => !isCanonicalCataloguePath(entry))) {
+    throw new Error('Invalid backup manifest: files must be canonical forward-slash catalogue paths');
   }
   return manifest as unknown as BackupManifest;
 }
@@ -374,8 +486,9 @@ function confinedBackup(runPath: string, file: string): string {
 /** Restore the most recent backup run. */
 export function revert(cwd: string, config: LoopConfig, backupDir: string): string[] {
   if (!fs.existsSync(backupDir)) return [];
+  const backupRoot = ensureDirectoryWithoutSymlinks(cwd, backupDir, false);
   const runs = fs
-    .readdirSync(backupDir, { withFileTypes: true })
+    .readdirSync(backupRoot, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
     .sort();
@@ -383,13 +496,13 @@ export function revert(cwd: string, config: LoopConfig, backupDir: string): stri
   const latest = runs.at(-1);
   if (!latest) return [];
 
-  const runPath = path.join(backupDir, latest);
+  const runPath = path.join(backupRoot, latest);
   const manifestPath = path.join(runPath, 'backup-manifest.json');
   const manifestStat = fs.lstatSync(manifestPath);
   if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
     throw new Error('Invalid backup manifest: backup-manifest.json must be a regular file');
   }
-  const manifest = readBackupManifest(manifestPath);
+  const manifest = readBackupManifest(manifestPath, latest);
   const scope = resolveCatalogueScope(cwd, config);
   if (manifest.scopeDigest !== scope.scopeDigest) {
     throw new Error('backup catalogue scope does not match the current catalogue scope');

@@ -24,6 +24,10 @@ const RUN_FILES = [
   'report.md',
 ];
 
+export function isSafeRunId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
+}
+
 /** Archive the active run before a new scan replaces its state files. */
 export function archiveActiveRun(outDir: string): string | null {
   const inventoryPath = path.join(outDir, 'inventory.json');
@@ -32,7 +36,7 @@ export function archiveActiveRun(outDir: string): string | null {
   const runId = inventory.runId === undefined
     ? `legacy-${Date.now()}`
     : inventory.runId;
-  if (typeof runId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(runId)) {
+  if (!isSafeRunId(runId)) {
     throw new Error('cannot archive active run: inventory has an unsafe runId');
   }
   const destination = path.join(outDir, 'history', runId);

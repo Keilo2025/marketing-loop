@@ -148,6 +148,49 @@ test('apply changes only the source catalogue', () => {
   }
 });
 
+test('apply rejects a forged runId before creating a backup outside backupDir', () => {
+  const state = approvedCatalogueState();
+  try {
+    const forgedRunId = '../../../../escaped-run';
+    state.set.runId = forgedRunId;
+    state.inventory.runId = forgedRunId;
+    state.decisions.runId = forgedRunId;
+    const escaped = path.join(state.cwd, 'escaped-run');
+
+    const results = applyProposals(state.set, state.options());
+
+    assert.equal(results[0].ok, false);
+    assert.match(results[0].reason, /unsafe runId/i);
+    assert.equal(fs.existsSync(escaped), false);
+    assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), state.originalSource);
+  } finally {
+    fs.rmSync(state.cwd, { recursive: true, force: true });
+  }
+});
+
+test('apply rejects a backup directory with an existing symlink component', () => {
+  const state = approvedCatalogueState();
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-external-backup-'));
+  try {
+    const externalBackups = path.join(external, 'backups');
+    fs.mkdirSync(externalBackups);
+    fs.symlinkSync(external, path.join(state.cwd, 'backup-link'));
+
+    const results = applyProposals(state.set, {
+      ...state.options(),
+      backupDir: path.join(state.cwd, 'backup-link', 'backups'),
+    });
+
+    assert.equal(results[0].ok, false);
+    assert.match(results[0].reason, /backup directory.*symbolic link/i);
+    assert.deepEqual(fs.readdirSync(externalBackups), []);
+    assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), state.originalSource);
+  } finally {
+    fs.rmSync(state.cwd, { recursive: true, force: true });
+    fs.rmSync(external, { recursive: true, force: true });
+  }
+});
+
 test('revert refuses a backup outside the current source catalogue', () => {
   const state = approvedCatalogueState();
   try {
@@ -210,4 +253,110 @@ test('revert restores the manifest-listed source catalogue file', () => {
   } finally {
     fs.rmSync(state.cwd, { recursive: true, force: true });
   }
+});
+
+function appliedBackupState() {
+  const state = approvedCatalogueState();
+  const backupDir = path.join(state.cwd, '.marketing-loop', 'backups');
+  const results = applyProposals(state.set, {
+    ...state.options(),
+    backupDir,
+  });
+  assert.equal(results[0].ok, true, results[0].reason);
+  const runs = fs.readdirSync(backupDir).sort();
+  assert.equal(runs.length, 1);
+  const runDir = path.join(backupDir, runs[0]);
+  const manifestPath = path.join(runDir, 'backup-manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  return {
+    ...state,
+    backupDir,
+    runDir,
+    manifestPath,
+    manifest,
+    appliedSource: fs.readFileSync(state.sourceFile, 'utf8'),
+  };
+}
+
+function assertManifestRejected(mutate, expected) {
+  const state = appliedBackupState();
+  try {
+    mutate(state);
+    fs.writeFileSync(state.manifestPath, JSON.stringify(state.manifest));
+    assert.throws(
+      () => revert(state.cwd, state.config, state.backupDir),
+      expected,
+    );
+    assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), state.appliedSource);
+  } finally {
+    fs.rmSync(state.cwd, { recursive: true, force: true });
+  }
+}
+
+test('revert rejects a backup directory replaced by a symbolic link', () => {
+  const state = appliedBackupState();
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-external-revert-'));
+  try {
+    const externalBackups = path.join(external, 'backups');
+    fs.renameSync(state.backupDir, externalBackups);
+    fs.symlinkSync(externalBackups, state.backupDir);
+
+    assert.throws(
+      () => revert(state.cwd, state.config, state.backupDir),
+      /backup directory.*symbolic link/i,
+    );
+    assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), state.appliedSource);
+  } finally {
+    fs.rmSync(state.cwd, { recursive: true, force: true });
+    fs.rmSync(external, { recursive: true, force: true });
+  }
+});
+
+test('revert rejects backup manifests with unknown fields', () => {
+  assertManifestRejected(
+    (state) => { state.manifest.extra = true; },
+    /exactly schemaVersion, runId, scopeDigest, and files/i,
+  );
+});
+
+test('revert rejects backup manifests with unsafe runIds', () => {
+  assertManifestRejected(
+    (state) => { state.manifest.runId = '../unsafe'; },
+    /unsafe runId/i,
+  );
+});
+
+test('revert binds the manifest runId to the selected backup directory', () => {
+  assertManifestRejected(
+    (state) => { state.manifest.runId = 'another-run'; },
+    /runId does not match.*backup directory/i,
+  );
+});
+
+test('revert rejects backup manifests with invalid scope digests', () => {
+  assertManifestRejected(
+    (state) => { state.manifest.scopeDigest = 'not-a-digest'; },
+    /scopeDigest must be a SHA-256 digest/i,
+  );
+});
+
+test('revert rejects backup manifests with an empty file list', () => {
+  assertManifestRejected(
+    (state) => { state.manifest.files = []; },
+    /files must be a non-empty/i,
+  );
+});
+
+test('revert rejects backup manifests with duplicate file paths', () => {
+  assertManifestRejected(
+    (state) => { state.manifest.files.push(state.manifest.files[0]); },
+    /files must contain unique/i,
+  );
+});
+
+test('revert rejects backup manifests with noncanonical file paths', () => {
+  assertManifestRejected(
+    (state) => { state.manifest.files = ['./messages/en.json']; },
+    /canonical forward-slash/i,
+  );
 });
