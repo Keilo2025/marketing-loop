@@ -283,8 +283,21 @@ export interface ApplyResult {
   backup?: string;
 }
 
+export type CatalogueLayout = 'single-file' | 'namespaced' | 'custom';
+
+export interface CatalogueConfig {
+  messagesDir: string;
+  sourceLocale: string;
+  layout: CatalogueLayout;
+}
+
+export interface CatalogueScope extends CatalogueConfig {
+  files: string[];
+  scopeDigest: string;
+}
+
 export interface LoopConfig {
-  /** Directories to scan for copy. */
+  /** Directories to scan for copy; they do not define catalogue scope. */
   include: string[];
   /** Glob-ish fragments to skip. */
   exclude: string[];
@@ -317,6 +330,8 @@ export interface LoopConfig {
   surfaces?: Surface[];
   /** Persuasion techniques explicitly switched off for this project. */
   disabledPrinciples: string[];
-  /** Never touch these files even if they contain copy. */
+  /** Never touch these files even if they contain copy; they do not define catalogue scope. */
   protectedFiles: string[];
+  /** Optional explicit source catalogue, overridden by language-loop.config.json. */
+  catalogue?: CatalogueConfig;
 }

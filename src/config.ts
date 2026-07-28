@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { DEFAULT_SURFACES, type LoopConfig } from './types.js';
+import { DEFAULT_SURFACES, type CatalogueConfig, type LoopConfig } from './types.js';
 import { exists, readJsonStrict, writeJson } from './util/fsx.js';
 
 export const CONFIG_FILE = 'marketing-loop.config.json';
@@ -133,6 +133,31 @@ export function validateConfig(raw: unknown, file = CONFIG_FILE): LoopConfig {
     throw new Error(`Invalid ${file}: unsupported surface "${invalidSurface}"`);
   }
 
+  const catalogueRaw = value.catalogue;
+  if (catalogueRaw !== undefined && (!catalogueRaw || typeof catalogueRaw !== 'object' || Array.isArray(catalogueRaw))) {
+    throw new Error(`Invalid ${file}: catalogue must be an object`);
+  }
+  let catalogue: CatalogueConfig | undefined;
+  if (catalogueRaw !== undefined) {
+    const candidate = catalogueRaw as Record<string, unknown>;
+    const stringField = (key: 'messagesDir' | 'sourceLocale'): string => {
+      const field = candidate[key];
+      if (typeof field !== 'string' || !field.trim()) {
+        throw new Error(`Invalid ${file}: catalogue.${key} must be a non-empty string`);
+      }
+      return field;
+    };
+    const layout = candidate.layout;
+    if (layout !== 'single-file' && layout !== 'namespaced' && layout !== 'custom') {
+      throw new Error(`Invalid ${file}: catalogue.layout must be single-file, namespaced, or custom`);
+    }
+    catalogue = {
+      messagesDir: stringField('messagesDir'),
+      sourceLocale: stringField('sourceLocale'),
+      layout,
+    };
+  }
+
   return {
     ...defaultConfig,
     include: stringArray('include', defaultConfig.include),
@@ -152,6 +177,7 @@ export function validateConfig(raw: unknown, file = CONFIG_FILE): LoopConfig {
     surfaces: surfaces as LoopConfig['surfaces'],
     disabledPrinciples: stringArray('disabledPrinciples', defaultConfig.disabledPrinciples),
     protectedFiles: stringArray('protectedFiles', defaultConfig.protectedFiles),
+    ...(catalogue === undefined ? {} : { catalogue }),
   };
 }
 
