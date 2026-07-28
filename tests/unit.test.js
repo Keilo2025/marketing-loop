@@ -162,7 +162,7 @@ test('deleting an adjective does not strand the wrong article', () => {
 
 test('the company-flip refuses to orphan a pronoun', () => {
   const items = [{
-    id: 'x', file: 'a.html', line: 1, text: 'We help teams monitor their deployments.',
+    id: 'x', file: 'messages/en.json', line: 1, text: 'We help teams monitor their deployments.',
     kind: 'subhead', surface: 'landing', context: [], length: 40,
   }];
   const context = { sourceLocale: 'en', messagesDir: 'messages', layout: 'single-file', namespaces: [], audience: '', allowedClaims: [], generatedAt: '' };
@@ -179,7 +179,7 @@ test('the company-flip refuses to orphan a pronoun', () => {
 
 test('guardrails block dark patterns and flag unsourced numbers', () => {
   const base = {
-    id: 'x', copyId: 'c', file: 'a.html', line: 1, kind: 'cta',
+    id: 'x', copyId: 'c', file: 'messages/en.json', line: 1, kind: 'cta',
     before: 'Sign up', alternatives: [], rationale: '', problemSolved: '',
     principles: [], evidence: [], confidence: 0.9, status: 'pending', author: 'llm',
   };
@@ -207,7 +207,7 @@ test('guardrails respect allowedClaims', () => {
   const vouched = { ...config, allowedClaims: ['Join 12,000 teams shipping faster'] };
   const { kept } = applyGuardrails(
     [{
-      id: 'ok', copyId: 'c', file: 'a.html', line: 1, kind: 'cta',
+      id: 'ok', copyId: 'c', file: 'messages/en.json', line: 1, kind: 'cta',
       before: 'Sign up', after: 'Join 12,000 teams shipping faster', alternatives: [],
       rationale: '', problemSolved: '', principles: [], evidence: [],
       confidence: 0.9, status: 'pending', author: 'llm',
@@ -225,8 +225,8 @@ test('review markdown round-trips approvals and edits', () => {
     generatedAt: new Date().toISOString(),
     product: 'test',
     proposals: [
-      { id: 'p1', copyId: 'c1', file: 'a.html', line: 3, kind: 'cta', before: 'Submit', after: 'Get my audit', alternatives: ['See my audit'], rationale: 'r', problemSolved: 'p', principles: ['endowment'], evidence: [], confidence: 0.8, status: 'pending', author: 'engine' },
-      { id: 'p2', copyId: 'c2', file: 'a.html', line: 9, kind: 'headline', before: 'Old', after: 'New', alternatives: [], rationale: 'r', problemSolved: 'p', principles: [], evidence: [], confidence: 0.6, status: 'pending', author: 'engine' },
+      { id: 'p1', copyId: 'c1', file: 'messages/en.json', line: 3, kind: 'cta', before: 'Submit', after: 'Get my audit', alternatives: ['See my audit'], rationale: 'r', problemSolved: 'p', principles: ['endowment'], evidence: [], confidence: 0.8, status: 'pending', author: 'engine' },
+      { id: 'p2', copyId: 'c2', file: 'messages/en.json', line: 9, kind: 'headline', before: 'Old', after: 'New', alternatives: [], rationale: 'r', problemSolved: 'p', principles: [], evidence: [], confidence: 0.6, status: 'pending', author: 'engine' },
     ],
   };
 
@@ -540,6 +540,27 @@ test('agents with a command directory get invokable slash commands, not just rul
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('installed guidance reads only the source catalogue, never code or target locales', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-install-scope-'));
+  const targets = AGENT_TARGETS.filter((target) => ['agents-md', 'cursor'].includes(target.id));
+
+  install(tmp, targets);
+  const contents = [
+    fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8'),
+    fs.readFileSync(path.join(tmp, '.cursor/commands/marketing-loop.md'), 'utf8'),
+    fs.readFileSync(path.join(tmp, '.cursor/commands/copy-audit.md'), 'utf8'),
+    fs.readFileSync(path.join(tmp, '.cursor/commands/copy-review.md'), 'utf8'),
+  ];
+
+  for (const content of contents) {
+    assert.match(content, /only the configured source catalogue/i);
+    assert.match(content, /do not open application code or target locales/i);
+    assert.doesNotMatch(content, /product model inferred from|open the code|using the codebase|facts.*in the code/i);
+  }
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('AGENTS.md section installs and strips cleanly around existing content', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-agents-'));
   fs.writeFileSync(path.join(tmp, 'AGENTS.md'), '# My project\n\nExisting instructions.\n');
@@ -576,9 +597,9 @@ test('catalogue keys classify legal and product surfaces before generic app copy
 
 test('out-of-scope surfaces are counted and held back, not silently dropped', () => {
   const items = [
-    { id: 'a', file: 'src/app/page.tsx', line: 1, text: 'Submit', kind: 'cta', surface: 'landing', context: [], length: 6 },
-    { id: 'b', file: 'legal/terms.md', line: 1, text: 'Liability is limited by the provider.', kind: 'body', surface: 'legal', context: [], length: 36 },
-    { id: 'c', file: 'docs/guide.md', line: 1, text: 'Configuration is handled by the wizard.', kind: 'body', surface: 'docs', context: [], length: 38 },
+    { id: 'a', file: 'messages/en.json', line: 1, text: 'Submit', kind: 'cta', surface: 'landing', context: [], length: 6 },
+    { id: 'b', file: 'messages/en.json', line: 2, text: 'Liability is limited by the provider.', kind: 'body', surface: 'legal', context: [], length: 36 },
+    { id: 'c', file: 'messages/en.json', line: 3, text: 'Configuration is handled by the wizard.', kind: 'body', surface: 'docs', context: [], length: 38 },
   ];
   const findings = items.map((i) => ({ copyId: i.id, rule: 'passive-voice', severity: 'low', message: '', suggests: [] }));
 
@@ -597,7 +618,7 @@ test('out-of-scope surfaces are counted and held back, not silently dropped', ()
 test('the proposal cap covers open items too, and never starves them', () => {
   // 40 rewritable strings, all of which the engine could handle on its own.
   const items = Array.from({ length: 40 }, (_, i) => ({
-    id: 'i' + i, file: `src/app/p${i}.tsx`, line: 1,
+    id: 'i' + i, file: 'messages/en.json', line: i + 1,
     text: `We provide a powerful platform for teams number ${i}.`,
     kind: 'subhead', surface: 'landing', context: [], length: 50,
   }));
@@ -627,15 +648,17 @@ function fakeProposal(id, file, over = {}) {
   };
 }
 
-test('identical changes across files are linked, and locale bundles are called out', () => {
+test('identical source-catalogue changes are linked without touching the German target', () => {
+  const germanFile = path.join(FIXTURE, 'messages', 'de.json');
+  const germanBefore = fs.readFileSync(germanFile, 'utf8');
   const proposals = linkSiblings([
-    fakeProposal('a', 'messages/en/marketing.json'),
-    fakeProposal('b', 'messages/tr/marketing.json'),
-    fakeProposal('c', 'messages/uk/marketing.json'),
+    fakeProposal('a', 'messages/en.json'),
+    fakeProposal('b', 'messages/en.json'),
+    fakeProposal('c', 'messages/en.json'),
     // Same string, different rewrite — not a sibling. Approving the group must
     // never drag in a change the human was not shown.
-    fakeProposal('d', 'messages/de/marketing.json', { after: 'Add extras to your plan' }),
-    fakeProposal('e', 'index.html', { before: 'Submit', after: 'Get my audit' }),
+    fakeProposal('d', 'messages/en.json', { after: 'Add extras to your plan' }),
+    fakeProposal('e', 'messages/en.json', { before: 'Submit', after: 'Get my audit' }),
   ]);
 
   const [a, b, c, d, e] = proposals;
@@ -644,40 +667,33 @@ test('identical changes across files are linked, and locale bundles are called o
   assert.equal(d.siblings, undefined, 'a different rewrite is not a sibling');
   assert.equal(e.siblings, undefined, 'a different string is not a sibling');
 
-  assert.match(a.localeWarning, /3 locales/);
-  assert.match(a.localeWarning, /tr|uk/);
-  assert.match(a.localeWarning, /re-translating/);
+  assert.equal(a.localeWarning, undefined);
 
   const groups = siblingGroups(proposals);
   assert.equal(groups.length, 1);
   assert.equal(groups[0].members.length, 3);
-  assert.deepEqual(groups[0].locales.sort(), ['en', 'tr', 'uk']);
+  assert.deepEqual(groups[0].locales, ['en']);
+  assert.equal(fs.readFileSync(germanFile, 'utf8'), germanBefore);
 });
 
-test('locale detection handles the shapes people actually use', () => {
-  assert.equal(localeOf('messages/tr/marketing.json'), 'tr');
-  assert.equal(localeOf('src/locales/pt-BR/common.json'), 'pt-BR');
-  assert.equal(localeOf('public/i18n/de.json'), 'de');
-  assert.equal(localeOf('app/translations/fr_CA/app.yaml'), 'fr_CA');
-  assert.equal(localeOf('src/components/Hero.tsx'), null);
-  assert.equal(localeOf('index.html'), null);
-  // A two-letter directory that is not a locale directory must not match.
-  assert.equal(localeOf('src/ui/button.tsx'), null);
+test('source catalogue paths resolve to the configured English locale', () => {
+  assert.equal(localeOf('messages/en.json'), 'en');
+  assert.equal(localeOf('messages/en/marketing.json'), 'en');
 });
 
 test('a ticked fan-out carries the decision, but never overrides an explicit one', () => {
   const set = {
     generatedAt: '', product: 't',
     proposals: linkSiblings([
-      fakeProposal('a', 'messages/en/m.json'),
-      fakeProposal('b', 'messages/tr/m.json'),
-      fakeProposal('c', 'messages/uk/m.json'),
+      fakeProposal('a', 'messages/en.json'),
+      fakeProposal('b', 'messages/en.json'),
+      fakeProposal('c', 'messages/en.json'),
     ]),
   };
 
   const { set: folded, fannedOut } = foldDecisions(set, [
     { proposalId: 'a', approved: true, finalText: 'Enhance your experience with extras', fanOut: true },
-    // The human looked at the Ukrainian one and said no. That has to stand.
+    // The human looked at the other source entry and said no. That has to stand.
     { proposalId: 'c', approved: false },
   ]);
 
@@ -692,8 +708,8 @@ test('without the fan-out tick, siblings are left alone', () => {
   const set = {
     generatedAt: '', product: 't',
     proposals: linkSiblings([
-      fakeProposal('a', 'messages/en/m.json'),
-      fakeProposal('b', 'messages/tr/m.json'),
+      fakeProposal('a', 'messages/en.json'),
+      fakeProposal('b', 'messages/en.json'),
     ]),
   };
 
@@ -709,14 +725,14 @@ test('the review file round-trips the fan-out tick', () => {
   const set = {
     generatedAt: '', product: 't',
     proposals: linkSiblings([
-      fakeProposal('aaa1', 'messages/en/m.json'),
-      fakeProposal('bbb2', 'messages/tr/m.json'),
+      fakeProposal('aaa1', 'messages/en.json'),
+      fakeProposal('bbb2', 'messages/en.json'),
     ]),
   };
 
   let md = renderReview(set);
   assert.match(md, /SAME DECISION FOR ALL IDENTICAL COPIES \(1 other\)/);
-  assert.match(md, /Translation\./, 'the locale warning reaches the markdown path too');
+  assert.doesNotMatch(md, /Translation\./, 'source-only siblings do not invite target-locale approval');
 
   md = md.replace('<!-- marketing-loop:aaa1 -->\n- [ ] APPROVE', '<!-- marketing-loop:aaa1 -->\n- [x] APPROVE')
          .replace('- [ ] SAME DECISION FOR ALL IDENTICAL COPIES', '- [x] SAME DECISION FOR ALL IDENTICAL COPIES');
@@ -946,7 +962,7 @@ test('agent output identity must match the active run', () => {
 
 test('model-written evidence cannot source an invented number', () => {
   const proposal = {
-    id: 'claim', copyId: 'c', file: 'page.html', line: 1, kind: 'headline',
+    id: 'claim', copyId: 'c', file: 'messages/en.json', line: 1, kind: 'headline',
     before: 'Trusted by teams', after: 'Trusted by 12,347 teams',
     alternatives: [], rationale: '', problemSolved: '', principles: [],
     evidence: ['README says 12,347 teams'], confidence: 0.9,
@@ -992,7 +1008,7 @@ test('agent dark patterns are blocked during import before review', () => {
 
 test('approval records are bound to the run, inventory, proposal, and final text', () => {
   const proposal = {
-    id: 'p-bound', copyId: 'c-bound', file: 'page.html', line: 1, kind: 'cta',
+    id: 'p-bound', copyId: 'c-bound', file: 'messages/en.json', line: 1, kind: 'cta',
     before: 'Submit', after: 'Get my audit', alternatives: [],
     rationale: 'Names the deliverable.', problemSolved: 'The action was vague.',
     principles: [], evidence: [], confidence: 0.8, status: 'pending', author: 'engine',
@@ -1022,7 +1038,7 @@ test('approval records are bound to the run, inventory, proposal, and final text
 
 test('a review file from another run is refused instead of silently reused', () => {
   const proposal = {
-    id: 'p-stale', copyId: 'c-stale', file: 'page.html', line: 1, kind: 'cta',
+    id: 'p-stale', copyId: 'c-stale', file: 'messages/en.json', line: 1, kind: 'cta',
     before: 'Submit', after: 'Get my audit', alternatives: [], rationale: '',
     problemSolved: '', principles: [], evidence: [], confidence: 0.8,
     status: 'pending', author: 'engine',

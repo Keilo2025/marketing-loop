@@ -55,7 +55,9 @@ If \`marketing-loop.config.json\` does not exist:
 npx marketing-loop@latest init
 \`\`\`
 
-Then fill in two fields properly, using the codebase and README:
+Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.**
+
+Then fill in two fields with product-owner-approved marketing context:
 
 - \`audience\` — who this is actually for, in plain words
 - \`allowedClaims\` — facts the copy is cleared to state. **Ask me for these.** Anything not listed, the copy may not claim.
@@ -70,23 +72,23 @@ npx marketing-loop@latest propose
 
 ## 3. Read the brief
 
-Read \`.marketing-loop/brief.md\` in full: the product model inferred from the code, the behavioural evidence, the voice constraints, the persuasion library, and the open items.
+Read \`.marketing-loop/brief.md\` in full: the source-catalogue context, behavioural evidence, voice constraints, persuasion library, and open items.
 
 ## 4. Verify, then write
 
 For each open item:
 
-1. Open the code that implements whatever the string is talking about. Find the real detail — limits, formats, timings, what it actually does. That detail is the copy.
-2. Write the rewrite from that detail, not from the feature name.
+1. Use only the configured source catalogue, marketing config, behavioural data, approved claims, and the brief.
+2. Do not open application code or target locales. If the source catalogue lacks a necessary fact, add a \`NEEDS-FACT\` question instead.
 3. Give at least one genuine alternative, so I get a real choice rather than a rubber stamp.
 
 Write only \`.marketing-loop/agent-output.json\` using the exact schema, \`runId\`, \`inventoryDigest\`, and open-item \`copyId\` values from the brief. Do not provide paths, source text, ids, authors, or statuses; import reconstructs them from the active inventory.
 
-**Never invent a fact.** No user counts, testimonials, percentages, guarantees or timings unless they are in the code, in \`allowedClaims\`, or in the brief. Where a rewrite wants a number you do not have, write it without and add \`NEEDS-FACT: <question>\` to that proposal's evidence array.
+**Never invent a fact.** No user counts, testimonials, percentages, guarantees or timings unless they are in approved \`allowedClaims\`, marketing data, or the brief. Where a rewrite wants a number you do not have, write it without and add \`NEEDS-FACT: <question>\` to that proposal's evidence array.
 
 **No dark patterns.** Fabricated urgency or scarcity, confirmshaming, hidden billing, fake social proof, decline options framed as mistakes. The guardrails reject these anyway.
 
-**Copy only.** No component restructuring, no new props, no logic, no styling.
+**Copy only.** Do not edit application code or target locales.
 
 ## 5. Validate and hand back
 
@@ -105,11 +107,11 @@ Then tell me to run \`npx marketing-loop review --ui\`. Do not run \`apply\` unl
 npx marketing-loop@latest scan
 \`\`\`
 
-Read \`.marketing-loop/findings.json\`, \`product.json\` and \`behavior.json\`, then write the report.
+Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** Read \`.marketing-loop/findings.json\`, \`.marketing-loop/inventory.json\`, \`.marketing-loop/brief.md\`, and \`.marketing-loop/behavior.json\`, then write the report.
 
-## What this product actually does
+## What the source catalogue says
 
-One paragraph written from the code — not from the README's description of itself. Where the code and the marketing disagree, that gap is usually the most valuable finding in the audit.
+One paragraph grounded only in source-catalogue text, approved claims, behavioural data, and the brief. State unanswered questions instead of inferring product behavior from application code.
 
 ## The five strings costing the most
 
@@ -130,7 +132,7 @@ If \`marketing-data/\` was empty, name the single export that would sharpen the 
   {
     name: 'copy-review',
     description: 'Open the human approval canvas for pending copy changes',
-    body: `If \`.marketing-loop/agent-output.json\` exists, run \`npx marketing-loop@latest import\` first. Then check that \`.marketing-loop/proposals.json\` has pending proposals. If not, run the marketing-loop command first.
+    body: `Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** If \`.marketing-loop/agent-output.json\` exists, run \`npx marketing-loop@latest import\` first. Then check that \`.marketing-loop/proposals.json\` has pending proposals. If not, run the marketing-loop command first.
 
 \`\`\`bash
 npx marketing-loop@latest review --ui
@@ -417,7 +419,7 @@ function renderBlock(target: AgentTarget): string {
     return [
       '---',
       'description: Marketing copy loop — how to write and ship product copy in this repo',
-      'globs: ["**/*.tsx","**/*.jsx","**/*.html","**/*.vue","**/*.svelte","**/*.astro","**/*.md","**/*.mdx"]',
+      'globs: ["marketing-loop.config.json","marketing-data/**","**/messages/*.json","**/messages/**/*.json"]',
       'alwaysApply: false',
       '---',
       '',
@@ -438,17 +440,19 @@ const INSTRUCTIONS = `
 
 This repository uses [\`marketing-loop\`](https://www.npmjs.com/package/marketing-loop). Any time you are asked to write, improve, or review user-facing copy — headlines, buttons, empty states, error messages, landing pages, pricing, app store text, meta descriptions — run the loop instead of writing copy freehand.
 
+Marketing-loop reads **only the configured source catalogue**. **Do not open application code or target locales.** Use only source-catalogue text, \`marketing-loop.config.json\`, \`marketing-data/\`, approved claims, and the generated brief.
+
 ### The loop
 
 \`\`\`bash
-npx marketing-loop scan      # find every user-facing string and diagnose it
+npx marketing-loop scan      # read the configured source catalogue and diagnose it
 npx marketing-loop propose   # engine writes what it can prove; leaves the rest to you
 npx marketing-loop import    # validates your agent-output.json
 npx marketing-loop review    # human approves — markdown, or --ui for the canvas
 npx marketing-loop apply     # writes only what a human approved
 \`\`\`
 
-\`scan\` and \`propose\` write \`.marketing-loop/brief.md\`. **Read that file.** It contains the product model inferred from this codebase, the behavioural data from \`marketing-data/\`, the persuasion library, the voice constraints, and a list of open items with the exact JSON schema for your response.
+\`scan\` and \`propose\` write \`.marketing-loop/brief.md\`. **Read that file.** It contains source-catalogue context, behavioural data from \`marketing-data/\`, voice constraints, and a list of open items with the exact JSON schema for your response.
 
 ### Your part
 
@@ -470,10 +474,10 @@ Sell the problem you remove, not the feature that removes it. The reader does no
 
 ### Hard rules
 
-- **Never invent a fact.** No user counts, testimonials, percentages, guarantees, timings or customer names unless they exist in the code, in \`allowedClaims\` in \`marketing-loop.config.json\`, or in the brief. If a line needs a fact you do not have, write it without and add \`NEEDS-FACT: <question>\` to the evidence array.
+- **Never invent a fact.** No user counts, testimonials, percentages, guarantees, timings or customer names unless they exist in approved \`allowedClaims\`, marketing data, or the brief. If a line needs a fact you do not have, write it without and add \`NEEDS-FACT: <question>\` to the evidence array.
 - **Never produce a dark pattern.** Fabricated urgency or scarcity, confirmshaming, hidden billing, fake live-activity, invented social proof, decline buttons framed as mistakes. The guardrails reject these automatically; do not waste a turn on them.
-- **Copy only.** No component restructuring, no new props, no logic changes, no styling.
-- **Never edit source files or canonical loop state directly.** Your only write target is \`agent-output.json\`; \`import\` validates it before human approval. That gate is the entire point of the tool.
+- **Copy only.** Do not open or edit application code, and do not open or edit target locales.
+- **Never edit the source catalogue or canonical loop state directly.** Your only write target is \`agent-output.json\`; \`import\` validates it before human approval. That gate is the entire point of the tool.
 `;
 
 function escapeRe(s: string): string {

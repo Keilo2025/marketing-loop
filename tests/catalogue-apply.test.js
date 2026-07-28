@@ -135,10 +135,11 @@ test('apply refuses an inventory item forged to target code', () => {
   }
 });
 
-test('apply changes only the source catalogue', () => {
+test('apply changes only the source catalogue and leaves German target bytes untouched', () => {
   const state = approvedCatalogueState();
   try {
     const beforeGerman = fs.readFileSync(state.germanFile, 'utf8');
+    assert.equal(beforeGerman, state.originalGerman);
     const results = applyProposals(state.set, state.options());
     assert.equal(results[0].ok, true);
     assert.equal(fs.readFileSync(state.germanFile, 'utf8'), beforeGerman);
