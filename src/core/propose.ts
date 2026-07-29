@@ -16,12 +16,15 @@ import type {
   BehaviorReport,
   CopyFinding,
   CopyItem,
+  ContentSelection,
   LoopConfig,
   MarketingContext,
   Proposal,
+  ReviewHistory,
 } from '../types.js';
 import { shortHash } from '../util/fsx.js';
 import { findingsFor } from './analyse.js';
+import { feedbackFor } from './history.js';
 
 const HYPE_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bsupercharge\b/gi, 'speed up'],
@@ -50,6 +53,10 @@ export interface ProposeInput {
   config: LoopConfig;
   /** Ranked copy items — proposals are generated in this order. */
   ranked: CopyItem[];
+  /** Decisions from archived runs, used to avoid repeating rejected copy. */
+  history?: ReviewHistory;
+  /** Canonical key boundary shared with the language stage. */
+  selection?: ContentSelection;
 }
 
 export interface ProposeOutput {
@@ -62,6 +69,9 @@ export function propose(input: ProposeInput): ProposeOutput {
   const { findings, config, ranked, items, behavior } = input;
   const proposals: Proposal[] = [];
   const openItems: ProposeOutput['openItems'] = [];
+  const selectedKeys = input.selection
+    ? new Set(input.selection.resolvedKeys)
+    : undefined;
 
   /*
    * Split the budget rather than letting the engine eat it.
@@ -77,13 +87,14 @@ export function propose(input: ProposeInput): ProposeOutput {
   for (const item of ranked) {
     if (proposals.length >= engineBudget && openItems.length >= config.maxProposals) break;
     const itemFindings = findingsFor(findings, item.id);
+    if (selectedKeys && !selectedKeys.has(item.catalogueKey)) continue;
     if (!itemFindings.length) continue;
 
     const evidence = buildEvidence(item, itemFindings, behavior);
     const rewrite = safeRewrite(item, items, input.context, itemFindings);
 
     if (rewrite && rewrite.after !== item.text && proposals.length < engineBudget) {
-      proposals.push({
+      const proposal: Proposal = {
         id: shortHash('proposal', item.id, rewrite.after),
         copyId: item.id,
         catalogueKey: item.catalogueKey,
@@ -102,14 +113,37 @@ export function propose(input: ProposeInput): ProposeOutput {
         confidence: rewrite.confidence,
         status: 'pending',
         author: 'engine',
-      });
+      };
+      const repeatedRejection = feedbackFor(input.history, proposal)
+        .find((entry) =>
+          entry.decision === 'rejected'
+          && entry.proposed === proposal.after,
+        );
+      if (repeatedRejection) {
+        openItems.push({
+          item,
+          findings: itemFindings,
+          ask: withReviewHistory(
+            askFor(item, itemFindings),
+            item,
+            input.history,
+            `Do not repeat "${proposal.after}".`,
+          ),
+        });
+        continue;
+      }
+      proposals.push(proposal);
       continue;
     }
 
     openItems.push({
       item,
       findings: itemFindings,
-      ask: askFor(item, itemFindings),
+      ask: withReviewHistory(
+        askFor(item, itemFindings),
+        item,
+        input.history,
+      ),
     });
   }
 
@@ -118,6 +152,29 @@ export function propose(input: ProposeInput): ProposeOutput {
   // long does not get finished.
   const budget = Math.max(0, config.maxProposals - proposals.length);
   return { proposals, openItems: openItems.slice(0, budget) };
+}
+
+function withReviewHistory(
+  ask: string,
+  item: CopyItem,
+  history: ReviewHistory | undefined,
+  prefix = '',
+): string {
+  const entries = feedbackFor(history, item).slice(0, 3);
+  if (!entries.length) return ask;
+
+  const lessons = entries.map((entry) => {
+    if (entry.decision === 'rejected') {
+      return `review rejected "${entry.proposed}"${entry.reason ? ` because ${entry.reason}` : ''}`;
+    }
+    if (entry.finalText !== entry.proposed) {
+      return `review changed "${entry.proposed}" to "${entry.finalText}"`;
+    }
+    return `review approved "${entry.finalText}"`;
+  });
+  return [ask, prefix, `Use prior review history: ${lessons.join('; ')}.`]
+    .filter(Boolean)
+    .join(' ');
 }
 
 /* ------------------------------------------------------------- rewriting */

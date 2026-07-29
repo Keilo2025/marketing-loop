@@ -1,5 +1,12 @@
 import path from 'node:path';
-import { DEFAULT_SURFACES, type CatalogueConfig, type LoopConfig } from './types.js';
+import {
+  DEFAULT_BEHAVIOR_BENCHMARKS,
+  DEFAULT_SURFACES,
+  type BehaviorBenchmarkMetric,
+  type BehaviorBenchmarks,
+  type CatalogueConfig,
+  type LoopConfig,
+} from './types.js';
 import { exists, readJsonStrict, writeJson } from './util/fsx.js';
 
 export const CONFIG_FILE = 'marketing-loop.config.json';
@@ -23,6 +30,7 @@ export const defaultConfig: LoopConfig = {
     '.d.ts',
   ],
   dataDir: 'marketing-data',
+  benchmarks: structuredClone(DEFAULT_BEHAVIOR_BENCHMARKS),
   outDir: '.marketing-loop',
   voice: {
     tone: 'plain, confident, specific — no hype, no exclamation marks',
@@ -169,11 +177,46 @@ export function validateConfig(raw: unknown, file = CONFIG_FILE): LoopConfig {
     };
   }
 
+  const benchmarkRaw = value.benchmarks;
+  if (benchmarkRaw !== undefined && (!benchmarkRaw || typeof benchmarkRaw !== 'object' || Array.isArray(benchmarkRaw))) {
+    throw new Error(`Invalid ${file}: benchmarks must be an object`);
+  }
+  const benchmarks: BehaviorBenchmarks = structuredClone(DEFAULT_BEHAVIOR_BENCHMARKS);
+  if (benchmarkRaw !== undefined) {
+    const candidate = benchmarkRaw as Record<string, unknown>;
+    const allowed = new Set<BehaviorBenchmarkMetric>([
+      'conversion_rate',
+      'bounce_rate',
+      'scroll_depth',
+      'dropoff',
+    ]);
+    for (const [metric, rawBenchmark] of Object.entries(candidate)) {
+      if (!allowed.has(metric as BehaviorBenchmarkMetric)) {
+        throw new Error(`Invalid ${file}: unsupported benchmarks.${metric}`);
+      }
+      if (!rawBenchmark || typeof rawBenchmark !== 'object' || Array.isArray(rawBenchmark)) {
+        throw new Error(`Invalid ${file}: benchmarks.${metric} must be an object`);
+      }
+      const benchmark = rawBenchmark as Record<string, unknown>;
+      if (typeof benchmark.value !== 'number' || !Number.isFinite(benchmark.value) || benchmark.value < 0) {
+        throw new Error(`Invalid ${file}: benchmarks.${metric}.value must be a non-negative number`);
+      }
+      if (typeof benchmark.source !== 'string' || !benchmark.source.trim()) {
+        throw new Error(`Invalid ${file}: benchmarks.${metric}.source must be a non-empty string`);
+      }
+      benchmarks[metric as BehaviorBenchmarkMetric] = {
+        value: benchmark.value,
+        source: benchmark.source.trim(),
+      };
+    }
+  }
+
   return {
     ...defaultConfig,
     include: stringArray('include', defaultConfig.include),
     exclude: stringArray('exclude', defaultConfig.exclude),
     dataDir: relativePath('dataDir', defaultConfig.dataDir),
+    benchmarks,
     outDir: relativePath('outDir', defaultConfig.outDir),
     voice: {
       tone: voiceString('tone', defaultConfig.voice.tone),
@@ -217,6 +260,8 @@ export function paths(cwd: string, config: LoopConfig) {
     decisions: path.join(out, 'decisions.json'),
     backups: path.join(out, 'backups'),
     report: path.join(out, 'report.md'),
+    measurements: path.join(out, 'measurements.json'),
+    contentLoop: path.join(out, 'content-loop.json'),
     history: path.join(out, 'history'),
     data: path.join(cwd, config.dataDir),
   };

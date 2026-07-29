@@ -8,6 +8,7 @@ import type {
 import { STATE_SCHEMA_VERSION } from '../types.js';
 import { hashText, writeJson } from '../util/fsx.js';
 import { isCatalogueTarget } from './catalogue.js';
+import { resolveContentSelection } from './filter.js';
 import { digestInventoryItems } from './scan.js';
 
 /** Derive a portable list of unresolved source-catalogue keys for a consumer. */
@@ -18,6 +19,20 @@ export function deriveHandoff(
 ): MarketingHandoff {
   assertHandoffIdentity(set, inventory, scope);
   const items = new Map(inventory.items.map((item) => [item.id, item]));
+  const selection = set.selection
+    ? resolveContentSelection(
+      inventory.items,
+      set.selection.filter,
+      set.selection.targetLocales,
+    )
+    : undefined;
+  if (
+    selection
+    && JSON.stringify(selection.resolvedKeys) !== JSON.stringify(set.selection?.resolvedKeys)
+  ) {
+    throw new Error('Content Loop selection does not match the active inventory');
+  }
+  const selectedKeys = selection ? new Set(selection.resolvedKeys) : undefined;
   for (const proposal of set.proposals) {
     const item = items.get(proposal.copyId);
     if (!item) {
@@ -33,6 +48,9 @@ export function deriveHandoff(
       proposal.before !== item.text
     ) {
       throw new Error(`proposal ${proposal.id} target does not match its active catalogue item`);
+    }
+    if (selectedKeys && !selectedKeys.has(proposal.catalogueKey)) {
+      throw new Error(`proposal ${proposal.id} is outside the Content Loop selection`);
     }
   }
   const unresolved: HandoffEntry[] = set.proposals
@@ -57,6 +75,7 @@ export function deriveHandoff(
     messagesDir: scope.messagesDir,
     sourceLocale: scope.sourceLocale,
     layout: scope.layout,
+    ...(selection ? { selection } : {}),
     unresolved,
   };
 }

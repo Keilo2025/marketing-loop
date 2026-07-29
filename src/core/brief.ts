@@ -10,10 +10,12 @@
 
 import type {
   BehaviorReport,
+  ContentSelection,
   CopyFinding,
   CopyItem,
   LoopConfig,
   MarketingContext,
+  ReviewHistory,
 } from '../types.js';
 import { STATE_SCHEMA_VERSION } from '../types.js';
 import type { ProposeOutput } from './propose.js';
@@ -29,6 +31,8 @@ export interface BriefInput {
   outDir: string;
   runId: string;
   inventoryDigest: string;
+  history?: ReviewHistory;
+  selection?: ContentSelection;
 }
 
 export function renderBrief(input: BriefInput): string {
@@ -76,6 +80,17 @@ export function renderBrief(input: BriefInput): string {
   s.push(`- **Allowed claims:** ${context.allowedClaims.length ? context.allowedClaims.join('; ') : '—'}`);
   s.push('');
 
+  if (input.selection) {
+    s.push('## Content selection');
+    s.push('');
+    s.push(`- **Types:** ${input.selection.filter.types.join(', ') || 'all'}`);
+    s.push(`- **Groups:** ${input.selection.filter.groups.join(', ') || 'all'}`);
+    s.push(`- **Explicit keys:** ${input.selection.filter.keys.join(', ') || 'all'}`);
+    s.push(`- **Resolved source keys:** ${input.selection.resolvedKeys.length}`);
+    s.push(`- **Target locales:** ${input.selection.targetLocales.join(', ') || 'resolved by Language Loop'}`);
+    s.push('');
+  }
+
   /* -------------------------------------------------------- the evidence */
   s.push('## What the behavioural data says');
   s.push('');
@@ -102,6 +117,30 @@ export function renderBrief(input: BriefInput): string {
     }
   }
   s.push('');
+
+  /* ------------------------------------------------------ review history */
+  const reviewed = input.history?.entries.slice(0, 20) ?? [];
+  if (reviewed.length) {
+    s.push('## Prior review history');
+    s.push('');
+    s.push('Treat these as product-owner feedback, not new factual claims. Do not repeat rejected wording; preserve the lesson behind human edits.');
+    s.push('');
+    for (const entry of reviewed) {
+      if (entry.decision === 'rejected') {
+        s.push(
+          `- \`${entry.catalogueKey}\` rejected “${briefText(entry.proposed)}”` +
+          `${entry.reason ? ` — ${briefText(entry.reason)}` : ''}`,
+        );
+      } else if (entry.finalText !== entry.proposed) {
+        s.push(
+          `- \`${entry.catalogueKey}\` changed “${briefText(entry.proposed)}” → “${briefText(entry.finalText)}”`,
+        );
+      } else {
+        s.push(`- \`${entry.catalogueKey}\` approved “${briefText(entry.finalText)}”`);
+      }
+    }
+    s.push('');
+  }
 
   /* -------------------------------------------------------------- voice */
   s.push('## Voice constraints');
@@ -241,4 +280,8 @@ function escapePipes(s: string): string {
 
 function relOut(outDir: string, file: string): string {
   return `${outDir.replace(/^.*\/(?=\.)/, '')}/${file}`.replace(/^\/+/, '');
+}
+
+function briefText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 180);
 }

@@ -9,11 +9,23 @@ export * from './types.js';
 export { CONFIG_FILE, defaultConfig, loadConfig, paths, saveConfig } from './config.js';
 export { analyse, findingsFor, prioritise } from './core/analyse.js';
 export { applyProposals, revert } from './core/apply.js';
-export { behaviorSubjects, loadBehavior, parseDelimited } from './core/behavior.js';
+export {
+  behaviorCopyIds,
+  behaviorSubjects,
+  loadBehavior,
+  parseDelimited,
+} from './core/behavior.js';
 export { renderBrief } from './core/brief.js';
 export { buildMarketingContext } from './core/context.js';
 export { serveCanvas } from './core/canvas.js';
 export { deriveHandoff, writeHandoff } from './core/handoff.js';
+export {
+  EMPTY_CONTENT_FILTER,
+  matchesContentFilter,
+  normalizeContentFilter,
+  resolveContentSelection,
+} from './core/filter.js';
+export { feedbackFor, loadReviewHistory } from './core/history.js';
 export {
   extractCatalogueFile,
   inferKindFromKey,
@@ -44,6 +56,24 @@ export {
   type InstallResult,
 } from './core/install.js';
 export { detectProvider, generateWithLlm, parseProposals } from './core/llm.js';
+export {
+  assertMeasurementLedger,
+  emptyMeasurementLedger,
+  markVariantDeployed,
+  recordBaseline,
+  recordPostChange,
+  registerVariant,
+} from './core/measurement.js';
+export {
+  readContentLoopState,
+  runContentLoop,
+  type RunContentLoopInput,
+} from './core/content.js';
+export {
+  createLanguageLoopAdapter,
+  loadLanguageLoopAdapter,
+  type LanguageLoopAdapterOptions,
+} from './core/content-language.js';
 export { propose, type ProposeInput, type ProposeOutput } from './core/propose.js';
 export {
   getPrinciple,

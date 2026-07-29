@@ -155,6 +155,39 @@ export interface BehaviorProblem {
   relatedCopyIds: string[];
 }
 
+export type BehaviorBenchmarkMetric =
+  | 'conversion_rate'
+  | 'bounce_rate'
+  | 'scroll_depth'
+  | 'dropoff';
+
+export interface BehaviorBenchmark {
+  value: number;
+  /** Human-readable origin, such as "Q2 signup baseline". */
+  source: string;
+}
+
+export type BehaviorBenchmarks = Record<BehaviorBenchmarkMetric, BehaviorBenchmark>;
+
+export const DEFAULT_BEHAVIOR_BENCHMARKS: BehaviorBenchmarks = {
+  conversion_rate: {
+    value: 3.5,
+    source: 'marketing-loop default heuristic; replace with your own baseline',
+  },
+  bounce_rate: {
+    value: 55,
+    source: 'marketing-loop default heuristic; replace with your own baseline',
+  },
+  scroll_depth: {
+    value: 50,
+    source: 'marketing-loop default heuristic; replace with your own baseline',
+  },
+  dropoff: {
+    value: 30,
+    source: 'marketing-loop default heuristic; replace with your own baseline',
+  },
+};
+
 export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'applied' | 'failed';
 
 export interface Proposal {
@@ -186,6 +219,8 @@ export interface Proposal {
   status: ProposalStatus;
   /** Human's replacement text, typed on the canvas. Wins over `after`. */
   edited?: string;
+  /** Human explanation captured when this proposal was rejected. */
+  rejectionReason?: string;
   /** Set when guardrails flagged the proposal. */
   warnings?: string[];
   /** Who wrote it: the deterministic engine, the host agent, or an API model. */
@@ -205,6 +240,19 @@ export interface Proposal {
   localeWarning?: string;
 }
 
+export interface ContentFilter {
+  schemaVersion: 1;
+  types: string[];
+  groups: string[];
+  keys: string[];
+}
+
+export interface ContentSelection {
+  filter: ContentFilter;
+  resolvedKeys: string[];
+  targetLocales: string[];
+}
+
 export interface ProposalSet {
   schemaVersion: 5;
   scopeDigest: string;
@@ -213,6 +261,8 @@ export interface ProposalSet {
   inventoryDigest: string;
   generatedAt: string;
   product: string;
+  /** Canonical Content Loop boundary shared with the language stage. */
+  selection?: ContentSelection;
   proposals: Proposal[];
 }
 
@@ -239,6 +289,8 @@ export interface ProposalDecision {
   proposalDigest: string;
   decision: 'approved' | 'rejected';
   finalText: string;
+  /** Optional human explanation for a rejection. */
+  reason?: string;
   source: 'canvas' | 'markdown';
   decidedAt: string;
 }
@@ -249,7 +301,27 @@ export interface DecisionSet {
   sourceLocale: string;
   runId: string;
   inventoryDigest: string;
+  /** Binds approvals to the Content Loop key boundary when one is active. */
+  selectionDigest?: string;
   decisions: ProposalDecision[];
+}
+
+export interface ReviewHistoryEntry {
+  runId: string;
+  proposalId: string;
+  copyId: string;
+  catalogueKey: string;
+  before: string;
+  proposed: string;
+  finalText: string;
+  decision: 'approved' | 'rejected';
+  reason?: string;
+  decidedAt: string;
+  author: Proposal['author'];
+}
+
+export interface ReviewHistory {
+  entries: ReviewHistoryEntry[];
 }
 
 export interface ApplyResult {
@@ -294,7 +366,143 @@ export interface MarketingHandoff {
   messagesDir: string;
   sourceLocale: string;
   layout: CatalogueLayout;
+  /** Additive Content Loop context; schema-v1 consumers may ignore it. */
+  selection?: ContentSelection;
   unresolved: HandoffEntry[];
+}
+
+export type MeasurementDirection = 'increase' | 'decrease';
+export type UpliftDecision = 'keep' | 'revert' | 'inconclusive';
+
+export interface MeasurementBaseline {
+  id: string;
+  subject: string;
+  metric: string;
+  value: number;
+  unit: BehaviorSignal['unit'];
+  sampleSize?: number;
+  measuredAt: string;
+  source: string;
+  direction: MeasurementDirection;
+}
+
+export interface MeasurementDeployment {
+  markedAt: string;
+  environment: string;
+  marker: string;
+}
+
+export interface PostChangeMeasurement {
+  value: number;
+  sampleSize?: number;
+  measuredAt: string;
+  source: string;
+  absoluteChange: number;
+  relativeChangePercent?: number;
+  /** Direction-normalized change: positive is better, negative is worse. */
+  upliftPercent?: number;
+  decision: UpliftDecision;
+  decisionReason: string;
+  minimumRelativeUplift: number;
+  minimumSampleSize: number;
+}
+
+export interface MeasurementVariant {
+  id: string;
+  baselineId: string;
+  runId: string;
+  proposalId: string;
+  catalogueKey: string;
+  before: string;
+  after: string;
+  createdAt: string;
+  deployment?: MeasurementDeployment;
+  results: PostChangeMeasurement[];
+}
+
+export interface MeasurementLedger {
+  schemaVersion: 1;
+  baselines: MeasurementBaseline[];
+  variants: MeasurementVariant[];
+}
+
+export type ContentPhase =
+  | 'marketing'
+  | 'waiting-review'
+  | 'language-ready'
+  | 'language'
+  | 'complete'
+  | 'needs-human'
+  | 'blocked';
+
+export interface ContentLanguageProgress {
+  locale: string;
+  total: number;
+  accepted: number;
+  pending: number;
+  rework: number;
+  needsHuman: number;
+  activeBatch?: number;
+}
+
+export interface ContentMarketingSnapshot {
+  runId: string;
+  selectedKeys: string[];
+  proposals: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  applied: number;
+  failed: number;
+  explicitDecisions: number;
+  handoffCompatible: boolean;
+  unresolvedKeys: string[];
+}
+
+export interface ContentLanguageSnapshot {
+  compatible: boolean;
+  status: 'ready' | 'running' | 'complete' | 'needs-human' | 'blocked';
+  adoptedSourceKeys: string[];
+  pending: number;
+  applied: number;
+  needsHuman: number;
+  marketingBlocked: number;
+  progress: ContentLanguageProgress[];
+  error?: string;
+  /** A rate or availability pause may be resumed without restarting marketing. */
+  retryable?: boolean;
+}
+
+export interface ContentMarketingAdapter {
+  start(selection: ContentSelection): Promise<ContentMarketingSnapshot>;
+  inspect(): Promise<ContentMarketingSnapshot>;
+  collectAndApply(): Promise<ContentMarketingSnapshot>;
+  openReview?(): Promise<void>;
+}
+
+export interface ContentLanguageRunInput {
+  execute: boolean;
+  keys: string[];
+  locales: string[];
+  onProgress?: (progress: ContentLanguageProgress[]) => void;
+}
+
+export interface ContentLanguageAdapter {
+  run(input: ContentLanguageRunInput): Promise<ContentLanguageSnapshot>;
+}
+
+export interface ContentLoopState {
+  schemaVersion: 1;
+  phase: ContentPhase;
+  contentRunId: string;
+  marketingRunId?: string;
+  startedAt: string;
+  updatedAt: string;
+  selection: ContentSelection;
+  marketing: ContentMarketingSnapshot;
+  language?: ContentLanguageSnapshot;
+  error?: string;
+  retryable?: boolean;
 }
 
 /**
@@ -321,6 +529,8 @@ export interface LoopConfig {
   exclude: string[];
   /** Where behavioral exports live. */
   dataDir: string;
+  /** Comparison thresholds with an explicit, reviewable provenance. */
+  benchmarks: BehaviorBenchmarks;
   /** Working directory for loop artefacts. */
   outDir: string;
   /** Product voice constraints the agent must respect. */

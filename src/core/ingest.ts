@@ -161,6 +161,9 @@ export function importAgentOutput(
   const rejected: ImportRejection[] = [];
   const seen = new Set<string>();
   const configuredSurfaces = new Set(config.surfaces ?? DEFAULT_SURFACES);
+  const selectedKeys = set.selection
+    ? new Set(set.selection.resolvedKeys)
+    : undefined;
 
   for (const [index, incoming] of output.proposals.entries()) {
     if (seen.has(incoming.copyId)) {
@@ -172,6 +175,14 @@ export function importAgentOutput(
     const item = itemById.get(incoming.copyId);
     if (!item) {
       rejected.push({ index, copyId: incoming.copyId, reason: 'copyId is not in the active inventory' });
+      continue;
+    }
+    if (selectedKeys && !selectedKeys.has(item.catalogueKey)) {
+      rejected.push({
+        index,
+        copyId: incoming.copyId,
+        reason: `copyId ${incoming.copyId} is outside the active Content Loop selection`,
+      });
       continue;
     }
     const canonicalSurface = inferSurfaceFromKey(item.catalogueKey);

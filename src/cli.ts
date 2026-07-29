@@ -13,12 +13,19 @@ import path from 'node:path';
 import { CONFIG_FILE, defaultConfig, hasDeprecatedScopeOptions, loadConfig, paths, saveConfig } from './config.js';
 import { analyse, prioritiseDetailed } from './core/analyse.js';
 import { applyProposals, revert } from './core/apply.js';
-import { behaviorSubjects, loadBehavior } from './core/behavior.js';
+import { behaviorCopyIds, loadBehavior } from './core/behavior.js';
 import { renderBrief } from './core/brief.js';
 import { resolveCatalogueScope } from './core/catalogue.js';
+import { createLanguageLoopAdapter } from './core/content-language.js';
+import { readContentLoopState, runContentLoop } from './core/content.js';
 import { buildMarketingContext } from './core/context.js';
 import { serveCanvas } from './core/canvas.js';
+import {
+  normalizeContentFilter,
+  resolveContentSelection,
+} from './core/filter.js';
 import { deriveHandoff, writeHandoff } from './core/handoff.js';
+import { loadReviewHistory } from './core/history.js';
 import { applyGuardrails } from './core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from './core/ingest.js';
 import { linkSiblings, siblingGroups } from './core/siblings.js';
@@ -29,6 +36,14 @@ import {
   uninstall as uninstallAgents,
 } from './core/install.js';
 import { detectProvider, generateWithLlm } from './core/llm.js';
+import {
+  assertMeasurementLedger,
+  emptyMeasurementLedger,
+  markVariantDeployed,
+  recordBaseline,
+  recordPostChange,
+  registerVariant,
+} from './core/measurement.js';
 import { propose } from './core/propose.js';
 import { renderReport } from './core/report.js';
 import { applyDecisions, collectReview, foldDecisions, renderReview } from './core/review.js';
@@ -40,13 +55,20 @@ import {
 import { collectDecisionSet, rotateActiveRun } from './core/state.js';
 import { ACTIVE_STATE_SCHEMA_ERROR, DEFAULT_SURFACES, STATE_SCHEMA_VERSION } from './types.js';
 import type {
+  ApplyResult,
   BehaviorReport,
+  ContentLoopState,
+  ContentMarketingAdapter,
+  ContentMarketingSnapshot,
+  ContentSelection,
   CopyFinding,
   CopyItem,
   DecisionSet,
   Inventory,
   LoopConfig,
   MarketingContext,
+  MeasurementDirection,
+  MeasurementLedger,
   ProposalSet,
 } from './types.js';
 import { exists, readJsonStrict, writeJson, writeText } from './util/fsx.js';
@@ -88,15 +110,17 @@ async function main(): Promise<void> {
   switch (command) {
     case 'init': return cmdInit(cwd, flags);
     case 'scan': return cmdScan(cwd, flags);
-    case 'propose': return cmdPropose(cwd, flags);
+    case 'propose': await cmdPropose(cwd, flags); return;
     case 'brief': return cmdBrief(cwd);
     case 'import': return cmdImport(cwd);
     case 'review': return cmdReview(cwd, flags);
-    case 'apply': return cmdApply(cwd, flags);
+    case 'apply': cmdApply(cwd, flags); return;
     case 'revert': return cmdRevert(cwd);
+    case 'measure': return cmdMeasure(cwd, flags);
     case 'install': return cmdInstall(cwd, flags);
     case 'uninstall': return cmdUninstall(cwd, flags);
     case 'status': return cmdStatus(cwd);
+    case 'content': return cmdContent(cwd, flags);
     case 'run': return cmdRun(cwd, flags);
     case 'version':
     case '--version': return void console.log(VERSION);
@@ -176,12 +200,12 @@ function runScan(cwd: string): ScanArtefacts {
     items,
   };
   const context = buildMarketingContext(scope, items, config);
-  const behavior = loadBehavior(p.data, items);
+  const behavior = loadBehavior(p.data, items, config.benchmarks);
   const findings = analyse(items, context, config);
   const { ranked, outOfScope } = prioritiseDetailed(
     items,
     findings,
-    behaviorSubjects(behavior),
+    behaviorCopyIds(behavior),
     config.surfaces ?? DEFAULT_SURFACES,
   );
   const emptySet: ProposalSet = {
@@ -288,7 +312,11 @@ function cmdScan(cwd: string, flags: Flags): void {
 
 /* ---------------------------------------------------------------- propose */
 
-async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
+async function cmdPropose(
+  cwd: string,
+  flags: Flags,
+  selection?: ContentSelection,
+): Promise<{ set: ProposalSet; inventory: Inventory }> {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
 
@@ -296,9 +324,19 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
 
   log.step('Scanning…');
   const { inventory, items, context, findings, behavior, ranked, outOfScope } = runScan(cwd);
+  const history = loadReviewHistory(p.history);
 
   log.step('Proposing…');
-  const result = propose({ items, findings, context, behavior, config, ranked });
+  const result = propose({
+    items,
+    findings,
+    context,
+    behavior,
+    config,
+    ranked,
+    history,
+    selection,
+  });
 
   const { kept, blocked } = applyGuardrails(result.proposals, config);
   let set: ProposalSet = {
@@ -309,6 +347,7 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
     inventoryDigest: inventory.inventoryDigest,
     generatedAt: new Date().toISOString(),
     product: context.currentTagline ?? 'source catalogue',
+    ...(selection ? { selection } : {}),
     proposals: linkSiblings(kept),
   };
   const brief = renderBrief({
@@ -321,6 +360,8 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
     outDir: config.outDir,
     runId: inventory.runId,
     inventoryDigest: inventory.inventoryDigest,
+    history,
+    selection,
   });
 
   if (flags.llm) {
@@ -386,13 +427,15 @@ async function cmdPropose(cwd: string, flags: Flags): Promise<void> {
   log.title('If you are a human');
   log.info(`  ${c.cyan('npx marketing-loop review --ui')}   open the approval canvas`);
   log.info(`  ${c.cyan('npx marketing-loop review')}        or tick boxes in review.md`);
+  return { set, inventory };
 }
 
 function cmdBrief(cwd: string): void {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
   const { inventory, items, context, findings, behavior, ranked } = runScan(cwd);
-  const result = propose({ items, findings, context, behavior, config, ranked });
+  const history = loadReviewHistory(p.history);
+  const result = propose({ items, findings, context, behavior, config, ranked, history });
   const { kept } = applyGuardrails(result.proposals, config);
   const set: ProposalSet = {
     schemaVersion: STATE_SCHEMA_VERSION,
@@ -415,6 +458,7 @@ function cmdBrief(cwd: string): void {
     outDir: config.outDir,
     runId: inventory.runId,
     inventoryDigest: inventory.inventoryDigest,
+    history,
   }));
   log.ok(`Brief written to ${path.relative(cwd, p.brief)}`);
 }
@@ -576,14 +620,14 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
 
 /* ------------------------------------------------------------------ apply */
 
-function cmdApply(cwd: string, flags: Flags): void {
+function cmdApply(cwd: string, flags: Flags): ApplyResult[] {
   const config = loadConfig(cwd);
   const p = paths(cwd, config);
   const { set, inventory } = readActiveState(cwd, config, p);
   let decisions: DecisionSet;
 
   // A review.md left on disk with ticks in it is the human's latest word.
-  if (exists(p.review)) {
+  if (exists(p.review) && !flags['use-decisions']) {
     const markdown = fs.readFileSync(p.review, 'utf8');
     const collected = collectReview(markdown);
     decisions = collectDecisionSet(set, markdown);
@@ -601,7 +645,7 @@ function cmdApply(cwd: string, flags: Flags): void {
     log.warn('Nothing approved yet. Nothing to do.');
     log.dim('A human has to approve before anything is written. That is the point of the tool.');
     log.info(`  ${c.cyan('npx marketing-loop review --ui')}`);
-    return;
+    return [];
   }
 
   const dryRun = Boolean(flags['dry-run'] || flags.n);
@@ -640,6 +684,7 @@ function cmdApply(cwd: string, flags: Flags): void {
     log.dim(`Report: ${path.relative(cwd, p.report)}`);
     log.dim(`Undo:   npx marketing-loop revert`);
   }
+  return results;
 }
 
 function cmdRevert(cwd: string): void {
@@ -652,6 +697,109 @@ function cmdRevert(cwd: string): void {
   }
   log.ok(`Restored ${restored.length} file${restored.length === 1 ? '' : 's'}`);
   for (const file of restored) log.dim(`  ${file}`);
+}
+
+/* --------------------------------------------------------------- measure */
+
+function cmdMeasure(cwd: string, flags: Flags): void {
+  const config = loadConfig(cwd);
+  const p = paths(cwd, config);
+  const action = flags._[1] ?? 'status';
+  const ledger = readMeasurementLedger(p.measurements);
+
+  if (action === 'baseline') {
+    const metric = requiredFlag(flags, 'metric');
+    const direction = optionalDirection(flags.direction, metric);
+    const baseline = recordBaseline(ledger, {
+      subject: requiredFlag(flags, 'subject'),
+      metric,
+      value: requiredNumberFlag(flags, 'value'),
+      unit: optionalUnit(flags.unit),
+      sampleSize: optionalIntegerFlag(flags, 'sample-size'),
+      measuredAt: optionalTimestamp(flags.at),
+      source: requiredFlag(flags, 'source'),
+      direction,
+    });
+    writeJson(p.measurements, ledger);
+    log.ok(`Baseline ${baseline.id} recorded for ${baseline.subject}`);
+    return;
+  }
+
+  if (action === 'variant') {
+    const { set } = readActiveState(cwd, config, p);
+    const proposalId = requiredFlag(flags, 'proposal');
+    const proposal = set.proposals.find((candidate) => candidate.id === proposalId);
+    if (!proposal) throw new Error(`proposal ${proposalId} does not exist in the active run`);
+    if (proposal.status !== 'applied') {
+      throw new Error(`proposal ${proposalId} must be applied before it can become a measured variant`);
+    }
+    const variant = registerVariant(ledger, {
+      baselineId: requiredFlag(flags, 'baseline'),
+      runId: set.runId,
+      proposalId: proposal.id,
+      catalogueKey: proposal.catalogueKey,
+      before: proposal.before,
+      after: proposal.edited ?? proposal.after,
+      createdAt: optionalTimestamp(flags.at),
+    });
+    writeJson(p.measurements, ledger);
+    log.ok(`Variant ${variant.id} bound to ${proposal.catalogueKey}`);
+    return;
+  }
+
+  if (action === 'deploy') {
+    const variantId = requiredFlag(flags, 'variant');
+    const deployment = markVariantDeployed(ledger, variantId, {
+      markedAt: optionalTimestamp(flags.at),
+      environment: requiredFlag(flags, 'environment'),
+      marker: requiredFlag(flags, 'marker'),
+    });
+    writeJson(p.measurements, ledger);
+    log.ok(`Deployment marked for ${variantId} at ${deployment.markedAt}`);
+    return;
+  }
+
+  if (action === 'result') {
+    const variantId = requiredFlag(flags, 'variant');
+    const result = recordPostChange(ledger, variantId, {
+      value: requiredNumberFlag(flags, 'value'),
+      sampleSize: optionalIntegerFlag(flags, 'sample-size'),
+      measuredAt: optionalTimestamp(flags.at),
+      source: requiredFlag(flags, 'source'),
+      minimumRelativeUplift: optionalNumberFlag(flags, 'minimum-uplift', 5),
+      minimumSampleSize: optionalIntegerFlag(flags, 'minimum-sample') ?? 100,
+    });
+    writeJson(p.measurements, ledger);
+    log.ok(`Uplift decision for ${variantId}: ${result.decision}`);
+    log.info(`  ${result.decisionReason}`);
+    return;
+  }
+
+  if (action !== 'status') {
+    throw new Error('measure action must be baseline, variant, deploy, result, or status');
+  }
+
+  log.title('measurement status');
+  table([
+    ['baselines', String(ledger.baselines.length)],
+    ['variants', String(ledger.variants.length)],
+    ['deployed', String(ledger.variants.filter((variant) => variant.deployment).length)],
+    ['with results', String(ledger.variants.filter((variant) => variant.results.length).length)],
+  ]);
+  for (const variant of ledger.variants) {
+    const latest = variant.results.at(-1);
+    log.info(
+      `  ${variant.id} · ${variant.catalogueKey} · ` +
+      `${latest?.decision ?? (variant.deployment ? 'measuring' : 'not deployed')}`,
+    );
+  }
+}
+
+function readMeasurementLedger(file: string): MeasurementLedger {
+  if (!exists(file)) return emptyMeasurementLedger();
+  const ledger = readJsonStrict<unknown>(file);
+  assertMeasurementLedger(ledger);
+  return ledger;
 }
 
 /* ---------------------------------------------------------------- install */
@@ -740,6 +888,7 @@ function cmdStatus(cwd: string): void {
   const p = paths(cwd, config);
   const set = exists(p.proposals) ? readJsonStrict<ProposalSet>(p.proposals) : null;
   const handoff = exists(p.handoff) ? readJsonStrict<{ unresolved?: unknown[] }>(p.handoff) : null;
+  const measurements = readMeasurementLedger(p.measurements);
   let scope: ReturnType<typeof resolveCatalogueScope> | null = null;
   try { scope = resolveCatalogueScope(cwd, config); } catch { /* status remains useful before extraction */ }
 
@@ -753,6 +902,7 @@ function cmdStatus(cwd: string): void {
     ['catalogue directory', scope?.messagesDir ?? c.yellow('unresolved')],
     ['catalogue layout', scope?.layout ?? c.yellow('unresolved')],
     ['unresolved handoff', String(handoff?.unresolved?.length ?? 0)],
+    ['measurement variants', String(measurements.variants.length)],
   ]);
 
   if (set) {
@@ -771,6 +921,329 @@ function cmdStatus(cwd: string): void {
   const agents = detectAgents(cwd);
   log.blank();
   log.info(`Agents detected: ${agents.length ? agents.map((a) => a.id).join(', ') : c.grey('none')}`);
+}
+
+/* --------------------------------------------------------------- content */
+
+async function cmdContent(cwd: string, flags: Flags): Promise<void> {
+  const config = loadConfig(cwd);
+  const p = paths(cwd, config);
+  const action = flags._[1];
+  const active = readContentLoopState(p.contentLoop);
+
+  if (action === 'status') {
+    if (!active) {
+      log.warn('No Content Loop run exists yet.');
+      log.info(`Start one with ${c.cyan('npx marketing-loop content')}`);
+      return;
+    }
+    renderContentStatus(active, Boolean(flags.json));
+    return;
+  }
+
+  if (action && action !== 'plan') {
+    throw new Error(`Unknown content action "${action}". Use content, content plan, or content status.`);
+  }
+
+  let selection: ContentSelection;
+  if (active && !flags.restart) {
+    selection = active.selection;
+    assertRequestedSelectionUnchanged(flags, selection);
+  } else {
+    selection = previewContentSelection(cwd, flags);
+  }
+
+  if (action === 'plan') {
+    renderContentPlan(selection, Boolean(flags.json));
+    return;
+  }
+
+  const languageModule = languageModulePath(flags);
+  const state = await runContentLoop({
+    stateFile: p.contentLoop,
+    selection,
+    marketing: createMarketingAdapter(cwd, flags),
+    language: createLanguageLoopAdapter({
+      cwd,
+      ...(languageModule ? { modulePath: languageModule } : {}),
+    }),
+    executeLanguage: Boolean(flags.llm),
+    restart: Boolean(flags.restart),
+    openReview: Boolean(flags.ui),
+  });
+  renderContentStatus(state, Boolean(flags.json));
+
+  if (state.phase === 'waiting-review') {
+    log.info(`Next: review ${c.cyan(path.join(config.outDir, 'review.md'))}, then run ${c.cyan('npx marketing-loop content')} again.`);
+  } else if (state.phase === 'language-ready') {
+    log.info(`Next: ${c.cyan('npx marketing-loop content --llm')} to translate until every selected language is accepted.`);
+  } else if (state.phase === 'blocked') {
+    if (state.retryable) {
+      log.warn('The pause is retryable. Run the same Content Loop command again when the provider is available.');
+    }
+    process.exitCode = 2;
+  } else if (state.phase === 'needs-human') {
+    log.warn('A selected translation needs an explicit human decision before Content Loop can complete.');
+    process.exitCode = 2;
+  }
+}
+
+function createMarketingAdapter(cwd: string, flags: Flags): ContentMarketingAdapter {
+  return {
+    start: async (selection) => {
+      const config = loadConfig(cwd);
+      const p = paths(cwd, config);
+      const { set, inventory } = await cmdPropose(
+        cwd,
+        { ...flags, _: ['propose'] },
+        selection,
+      );
+      writeText(p.review, renderReview(set));
+      return marketingSnapshot(cwd, set, inventory, set.proposals.length ? 0 : 1);
+    },
+    inspect: async () => {
+      const config = loadConfig(cwd);
+      const p = paths(cwd, config);
+      const { set, inventory } = readActiveState(cwd, config, p);
+      return marketingSnapshot(cwd, set, inventory, explicitDecisionCount(p, set));
+    },
+    collectAndApply: async () => {
+      const config = loadConfig(cwd);
+      const p = paths(cwd, config);
+      let active = readActiveState(cwd, config, p);
+      if (!active.set.proposals.length) return marketingSnapshot(cwd, active.set, active.inventory, 1);
+
+      const reviewDecisions = exists(p.review)
+        ? collectReview(fs.readFileSync(p.review, 'utf8'))
+        : [];
+      const reviewExplicit = reviewDecisions.filter((decision) => decision.explicit !== false).length;
+      if (reviewExplicit) {
+        await cmdReview(cwd, { _: ['review'], collect: true });
+      } else if (!exists(p.decisions)) {
+        throw new Error('Content Loop is waiting for an explicit marketing review decision');
+      }
+
+      active = readActiveState(cwd, config, p);
+      let results: ApplyResult[] = [];
+      if (active.set.proposals.some((proposal) => proposal.status === 'approved')) {
+        results = cmdApply(cwd, { _: ['apply'], 'use-decisions': true });
+      }
+      active = readActiveState(cwd, config, p);
+      return marketingSnapshot(
+        cwd,
+        active.set,
+        active.inventory,
+        explicitDecisionCount(p, active.set),
+        results,
+      );
+    },
+    openReview: async () => {
+      const config = loadConfig(cwd);
+      const p = paths(cwd, config);
+      const { set } = readActiveState(cwd, config, p);
+      if (set.proposals.length) {
+        await cmdReview(cwd, {
+          _: ['review'],
+          ui: true,
+          ...(flags.port ? { port: flags.port } : {}),
+        });
+      }
+    },
+  };
+}
+
+function marketingSnapshot(
+  cwd: string,
+  set: ProposalSet,
+  inventory: Inventory,
+  explicitDecisions: number,
+  results: ApplyResult[] = [],
+): ContentMarketingSnapshot {
+  const config = loadConfig(cwd);
+  const p = paths(cwd, config);
+  const handoff = readJsonStrict<{
+    schemaVersion?: unknown;
+    selection?: unknown;
+    unresolved?: { key?: unknown }[];
+  }>(p.handoff);
+  const byStatus = (status: ProposalSet['proposals'][number]['status']): number =>
+    set.proposals.filter((proposal) => proposal.status === status).length;
+  const handoffCompatible = (
+    handoff.schemaVersion === 1
+    && JSON.stringify(handoff.selection) === JSON.stringify(set.selection)
+  );
+  return {
+    runId: inventory.runId,
+    selectedKeys: [...(set.selection?.resolvedKeys ?? [])],
+    proposals: set.proposals.length,
+    pending: byStatus('pending'),
+    approved: byStatus('approved'),
+    rejected: byStatus('rejected'),
+    applied: byStatus('applied'),
+    failed: Math.max(byStatus('failed'), results.filter((result) => !result.ok).length),
+    explicitDecisions,
+    handoffCompatible,
+    unresolvedKeys: Array.isArray(handoff.unresolved)
+      ? handoff.unresolved
+        .map((entry) => entry.key)
+        .filter((key): key is string => typeof key === 'string')
+      : [],
+  };
+}
+
+function explicitDecisionCount(
+  p: ReturnType<typeof paths>,
+  set: ProposalSet,
+): number {
+  if (!set.proposals.length) return 1;
+  let markdown = 0;
+  if (exists(p.review)) {
+    markdown = collectReview(fs.readFileSync(p.review, 'utf8'))
+      .filter((decision) => decision.explicit !== false)
+      .length;
+  }
+  let ledger = 0;
+  if (exists(p.decisions)) {
+    const decisions = readJsonStrict<DecisionSet>(p.decisions);
+    ledger = Array.isArray(decisions.decisions) ? decisions.decisions.length : 0;
+  }
+  return Math.max(markdown, ledger);
+}
+
+function previewContentSelection(cwd: string, flags: Flags): ContentSelection {
+  const config = loadConfig(cwd);
+  const scope = resolveCatalogueScope(cwd, config);
+  const scan = scanResolvedCatalogue(cwd, scope);
+  const filter = normalizeContentFilter({
+    types: commaList(flags.types),
+    groups: [...commaList(flags.groups), ...commaList(flags.categories)],
+    keys: commaList(flags.keys),
+  });
+  return resolveContentSelection(scan.items, filter, targetLocales(cwd, flags));
+}
+
+function targetLocales(cwd: string, flags: Flags): string[] {
+  const file = path.join(cwd, 'language-loop.config.json');
+  if (!exists(file)) {
+    throw new Error(
+      'Content Loop needs language-loop.config.json to resolve every target language. '
+      + 'Run Language Loop setup/extraction first.',
+    );
+  }
+  const raw = readJsonStrict<{
+    sourceLocale?: unknown;
+    locales?: unknown;
+  }>(file);
+  if (
+    typeof raw.sourceLocale !== 'string'
+    || !Array.isArray(raw.locales)
+    || !raw.locales.every((locale) => typeof locale === 'string')
+  ) {
+    throw new Error('language-loop.config.json must declare sourceLocale and locales');
+  }
+  const configured = raw.locales.filter((locale) => locale !== raw.sourceLocale);
+  if (!configured.length) {
+    throw new Error('Language Loop has no configured target languages for Content Loop');
+  }
+  const requested = commaList(flags.locales);
+  if (!requested.length) return configured;
+  const unknown = requested.filter((locale) => !configured.includes(locale));
+  if (unknown.length) {
+    throw new Error(`Target languages are not configured in Language Loop: ${unknown.join(', ')}`);
+  }
+  return requested;
+}
+
+function assertRequestedSelectionUnchanged(
+  flags: Flags,
+  active: ContentSelection,
+): void {
+  if (selectionFlagsPresent(flags)) {
+    const requested = normalizeContentFilter({
+      types: commaList(flags.types),
+      groups: [...commaList(flags.groups), ...commaList(flags.categories)],
+      keys: commaList(flags.keys),
+    });
+    if (JSON.stringify(requested) !== JSON.stringify(active.filter)) {
+      throw new Error('Content Loop filters differ from the active run; use --restart to change them');
+    }
+  }
+  const locales = commaList(flags.locales);
+  if (locales.length && JSON.stringify([...locales].sort()) !== JSON.stringify(active.targetLocales)) {
+    throw new Error('Content Loop target languages differ from the active run; use --restart to change them');
+  }
+}
+
+function selectionFlagsPresent(flags: Flags): boolean {
+  return ['types', 'groups', 'categories', 'keys'].some((key) => flags[key] !== undefined);
+}
+
+function languageModulePath(flags: Flags): string | undefined {
+  if (typeof flags['language-module'] === 'string') return flags['language-module'];
+  if (process.env.LANGUAGE_LOOP_MODULE) return process.env.LANGUAGE_LOOP_MODULE;
+  if (process.env.LANGUAGE_LOOP_REPO) {
+    return path.join(process.env.LANGUAGE_LOOP_REPO, 'dist', 'index.js');
+  }
+  return undefined;
+}
+
+function commaList(value: string | boolean | string[] | undefined): string[] {
+  if (value === undefined || value === false) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .flatMap((candidate) => typeof candidate === 'string' ? candidate.split(',') : [])
+    .map((candidate) => candidate.trim())
+    .filter(Boolean);
+}
+
+function renderContentPlan(selection: ContentSelection, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(selection, null, 2));
+    return;
+  }
+  log.title('Content Loop plan');
+  table([
+    ['types', selection.filter.types.join(', ') || 'all'],
+    ['groups/categories', selection.filter.groups.join(', ') || 'all'],
+    ['explicit keys', selection.filter.keys.join(', ') || 'all'],
+    ['selected messages', String(selection.resolvedKeys.length)],
+    ['target languages', selection.targetLocales.join(', ')],
+  ]);
+  log.blank();
+  for (const key of selection.resolvedKeys) log.dim(`  ${key}`);
+}
+
+function renderContentStatus(state: ContentLoopState, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(state, null, 2));
+    return;
+  }
+  log.title('Content Loop status');
+  table([
+    ['phase', state.phase],
+    ['content run', state.contentRunId],
+    ['marketing run', state.marketingRunId ?? 'not started'],
+    ['types', state.selection.filter.types.join(', ') || 'all'],
+    ['groups/categories', state.selection.filter.groups.join(', ') || 'all'],
+    ['explicit keys', state.selection.filter.keys.join(', ') || 'all'],
+    ['selected messages', String(state.selection.resolvedKeys.length)],
+    ['target languages', state.selection.targetLocales.join(', ')],
+    ['marketing proposals', String(state.marketing.proposals)],
+    ['marketing pending', String(state.marketing.pending)],
+    ['marketing applied', String(state.marketing.applied)],
+  ]);
+  if (state.language) {
+    log.blank();
+    log.title('Translation progress');
+    table(state.language.progress.map((row) => [
+      row.locale,
+      `${row.accepted}/${row.total} accepted · ${row.pending} pending · ${row.rework} rework · ${row.needsHuman} human`,
+    ]));
+  }
+  if (state.error) {
+    log.blank();
+    log.warn(state.error);
+  }
 }
 
 /* -------------------------------------------------------------------- run */
@@ -811,7 +1284,23 @@ ${c.bold('Commands')}
   ${c.cyan('apply')}              write approved changes to the source catalogue
     --dry-run          show what would change
   ${c.cyan('revert')}             restore the last applied run
+  ${c.cyan('measure')}            close the loop with baseline → variant → deploy → result
+    baseline           record the pre-change metric and source
+    variant            bind an applied proposal to a baseline
+    deploy             mark when and where the variant shipped
+    result             compare the post-change metric and record keep/revert/inconclusive
+    status             show active measurement ledgers
   ${c.cyan('status')}             where the loop currently stands
+  ${c.cyan('content')}            one resumable marketing → translation Content Loop
+    plan               preview the exact message and language selection
+    status             show durable stage and per-language progress
+    --types cta,...     include only CTAs, headlines, buttons, navigation, or labels
+    --groups hero,...   include canonical message groups/categories
+    --keys a.b,...      include exact canonical catalogue keys
+    --locales de,fr     use this configured target-language subset (default: all)
+    --ui                open the mandatory marketing review canvas
+    --llm               translate/retry until the judge accepts every selected language
+    --restart           start a new Content run and change its selection
   ${c.cyan('run')}                propose, then open the canvas
 
 ${c.bold('Typical first run')}
@@ -819,8 +1308,7 @@ ${c.bold('Typical first run')}
   npx marketing-loop install
   npx marketing-loop init
   npx marketing-loop scan
-  npx marketing-loop propose
-  npx marketing-loop review --ui
+  npx marketing-loop content --ui
 
 ${c.bold('Inside a coding agent')}
 
@@ -836,6 +1324,61 @@ function warnDeprecatedScopeOptions(cwd: string): void {
 }
 
 /* ----------------------------------------------------------------- helpers */
+
+function requiredFlag(flags: Flags, key: string): string {
+  const value = flags[key];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`--${key} is required`);
+  }
+  return value.trim();
+}
+
+function requiredNumberFlag(flags: Flags, key: string): number {
+  const value = Number(requiredFlag(flags, key));
+  if (!Number.isFinite(value)) throw new Error(`--${key} must be a number`);
+  return value;
+}
+
+function optionalNumberFlag(flags: Flags, key: string, fallback: number): number {
+  if (flags[key] === undefined) return fallback;
+  return requiredNumberFlag(flags, key);
+}
+
+function optionalIntegerFlag(flags: Flags, key: string): number | undefined {
+  if (flags[key] === undefined) return undefined;
+  const value = requiredNumberFlag(flags, key);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`--${key} must be a positive integer`);
+  }
+  return value;
+}
+
+function optionalTimestamp(value: string | boolean | string[] | undefined): string {
+  if (value === undefined) return new Date().toISOString();
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) {
+    throw new Error('--at must be an ISO timestamp');
+  }
+  return new Date(value).toISOString();
+}
+
+function optionalUnit(value: string | boolean | string[] | undefined): '%' | 'count' | 'seconds' | 'ratio' {
+  const unit = value === undefined ? '%' : value;
+  if (unit !== '%' && unit !== 'count' && unit !== 'seconds' && unit !== 'ratio') {
+    throw new Error('--unit must be %, count, seconds, or ratio');
+  }
+  return unit;
+}
+
+function optionalDirection(
+  value: string | boolean | string[] | undefined,
+  metric: string,
+): MeasurementDirection {
+  if (value === 'increase' || value === 'decrease') return value;
+  if (value !== undefined) throw new Error('--direction must be increase or decrease');
+  return /bounce|dropoff|drop_off|exit|abandon|latency|duration|time_to/i.test(metric)
+    ? 'decrease'
+    : 'increase';
+}
 
 function truncate(text: string, n: number): string {
   return text.length > n ? text.slice(0, n - 1) + '…' : text;
@@ -888,6 +1431,14 @@ Header names are matched loosely, so most exports work untouched:
 
 If a file is an ordered funnel with a users column and no explicit drop-off
 column, drop-off is calculated for you.
+
+## Benchmarks
+
+Configure project-specific thresholds in \`marketing-loop.config.json\` under
+\`benchmarks\`. Each metric needs both a numeric \`value\` and a human-readable
+\`source\`, for example \`"GA4 signup funnel, trailing 28 days"\`. Unconfigured
+metrics use defaults explicitly labelled as marketing-loop heuristics in the
+generated evidence.
 
 ## notes.md
 

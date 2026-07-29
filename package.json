@@ -37,6 +37,7 @@
     "skills",
     "commands",
     "agents",
+    "docs/content-loop-compatibility.md",
     ".claude-plugin",
     "README.md",
     "LICENSE"
@@ -45,6 +46,8 @@
     "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "test": "npm run build && node --test \"tests/**/*.test.js\"",
+    "test:cross-loop": "npm run build && node --test tests/cross-loop.test.js",
+    "test:content-integration": "npm run build && node --test tests/content-cli.test.js tests/content-language.test.js tests/content-loop.test.js",
     "loop": "node dist/cli.js",
     "prepack": "npm run build",
     "prepublishOnly": "npm test"
@@ -55,6 +58,14 @@
   "devDependencies": {
     "@types/node": "^22.20.1",
     "typescript": "^5.7.2"
+  },
+  "peerDependencies": {
+    "language-loop": ">=0.4.0 <0.5.0"
+  },
+  "peerDependenciesMeta": {
+    "language-loop": {
+      "optional": true
+    }
   },
   "repository": {
     "type": "git",

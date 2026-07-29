@@ -60,6 +60,7 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
         proposalId: proposal.id,
         approved: proposal.status === 'approved',
         finalText: proposal.edited ?? proposal.after,
+        reason: proposal.rejectionReason,
         explicit: true,
       })),
     'canvas',
@@ -104,16 +105,29 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
 
     if (req.method === 'POST' && url.pathname === '/api/decide') {
       return body(req, res, (data) => {
-        const { id, status, edited } = data as { id: string; status: string; edited?: string };
+        const { id, status, edited, reason } = data as {
+          id: string;
+          status: string;
+          edited?: string;
+          reason?: string;
+        };
         const proposal = set.proposals.find((p) => p.id === id);
         if (!proposal) return json(res, 404, { error: 'unknown proposal' });
         if (status !== 'approved' && status !== 'rejected' && status !== 'pending') {
           return json(res, 400, { error: 'invalid decision status' });
         }
+        if (typeof reason === 'string' && reason.length > 1000) {
+          return json(res, 400, { error: 'rejection reason is too long' });
+        }
         proposal.status = status;
-        if (typeof edited === 'string') {
+        proposal.rejectionReason = status === 'rejected' && typeof reason === 'string' && reason.trim()
+          ? reason.trim()
+          : undefined;
+        if (status === 'approved' && typeof edited === 'string') {
           if (edited.length > 1000) return json(res, 400, { error: 'edited text is too long' });
           proposal.edited = edited.trim() && edited.trim() !== proposal.after ? edited.trim() : undefined;
+        } else if (status !== 'approved') {
+          proposal.edited = undefined;
         }
         writeJson(proposalsPath, set);
         writeJson(decisionsPath, currentLedger());
@@ -130,7 +144,12 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
      */
     if (req.method === 'POST' && url.pathname === '/api/decide-group') {
       return body(req, res, (data) => {
-        const { id, status, edited } = data as { id: string; status: string; edited?: string };
+        const { id, status, edited, reason } = data as {
+          id: string;
+          status: string;
+          edited?: string;
+          reason?: string;
+        };
         const lead = set.proposals.find((p) => p.id === id);
         if (!lead) return json(res, 404, { error: 'unknown proposal' });
         if (status !== 'approved' && status !== 'rejected') {
@@ -140,7 +159,13 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
         if (typeof edited === 'string' && edited.length > 1000) {
           return json(res, 400, { error: 'edited text is too long' });
         }
+        if (typeof reason === 'string' && reason.length > 1000) {
+          return json(res, 400, { error: 'rejection reason is too long' });
+        }
         const text = typeof edited === 'string' && edited.trim() ? edited.trim() : undefined;
+        const rejectionReason = typeof reason === 'string' && reason.trim()
+          ? reason.trim()
+          : undefined;
         const changed: string[] = [];
 
         for (const sibId of [id, ...(lead.siblings ?? [])]) {
@@ -148,7 +173,10 @@ export function serveCanvas(opts: CanvasOptions): Promise<{ url: string; close: 
           // Never overturn a decision the human already made on a sibling.
           if (!sib || (sib.id !== id && sib.status !== 'pending')) continue;
           sib.status = status;
-          if (text) sib.edited = text !== sib.after ? text : undefined;
+          sib.rejectionReason = status === 'rejected' ? rejectionReason : undefined;
+          sib.edited = status === 'approved' && text && text !== sib.after
+            ? text
+            : undefined;
           changed.push(sib.id);
         }
 
@@ -336,6 +364,13 @@ const PAGE = `<!doctype html>
     background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
   }
   textarea.text:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .reason-label { display: block; margin: 10px 0 5px; color: var(--muted); font-size: 12px; }
+  textarea.reject-reason {
+    width: 100%; min-height: 48px; resize: vertical; border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 11px; color: inherit; background: transparent;
+    font: inherit; font-size: 13px; line-height: 1.45;
+  }
+  textarea.reject-reason:focus { outline: 2px solid var(--reject); outline-offset: -1px; }
   .why { font-size: 14px; color: var(--ink); margin-bottom: 10px; }
   .why b { font-weight: 620; }
   .alts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -488,6 +523,9 @@ function card(p, i) {
     '<p class="why"><b>Why.</b> ' + esc(p.rationale) + '</p>' +
     '<p class="why"><b>Problem it solves.</b> ' + esc(p.problemSolved) + '</p>' +
     evidence +
+    '<label class="reason-label" for="reason-' + p.id + '">If you reject this, explain why so the next run can learn</label>' +
+    '<textarea class="reject-reason" id="reason-' + p.id + '" rows="2" data-id="' + p.id + '" placeholder="Wrong claim, tone, audience, or direction…">' +
+      esc(p.rejectionReason || '') + '</textarea>' +
     '<div class="actions">' +
       '<button class="yes" data-id="' + p.id + '" aria-pressed="' + (p.status === 'approved') + '">Approve</button>' +
       '<button class="no" data-id="' + p.id + '" aria-pressed="' + (p.status === 'rejected') + '">Reject</button>' +
@@ -503,11 +541,11 @@ function pendingSiblings(p) {
     .filter(function (x) { return x && x.status === 'pending'; });
 }
 
-function decide(id, status, edited) {
+function decide(id, status, edited, reason) {
   return api('/api/decide', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id: id, status: status, edited: edited })
+    body: JSON.stringify({ id: id, status: status, edited: edited, reason: reason })
   }).then(function (data) {
     if (!data.proposal) return;
     var idx = state.proposals.findIndex(function (p) { return p.id === id; });
@@ -568,10 +606,16 @@ function offerFanout(p) {
 
 function fanout(id, status) {
   var textarea = document.querySelector('.final[data-id="' + id + '"]');
+  var reason = document.querySelector('.reject-reason[data-id="' + id + '"]');
   return api('/api/decide-group', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id: id, status: status, edited: textarea ? textarea.value : undefined })
+    body: JSON.stringify({
+      id: id,
+      status: status,
+      edited: textarea ? textarea.value : undefined,
+      reason: reason ? reason.value : undefined
+    })
   }).then(function (data) {
     if (!data.proposals) return;
     state.proposals = data.proposals;
@@ -596,7 +640,10 @@ function bind() {
     };
   });
   document.querySelectorAll('.no').forEach(function (b) {
-    b.onclick = function () { decide(b.dataset.id, 'rejected'); };
+    b.onclick = function () {
+      var reason = document.querySelector('.reject-reason[data-id="' + b.dataset.id + '"]');
+      decide(b.dataset.id, 'rejected', undefined, reason ? reason.value : undefined);
+    };
   });
   document.querySelectorAll('.alt').forEach(function (b) {
     b.onclick = function () {
@@ -653,7 +700,13 @@ document.addEventListener('keydown', function (e) {
   if (e.key === 'a' || e.key === 'r') {
     var id = cards[state.cursor].dataset.id;
     var ta = document.querySelector('textarea[data-id="' + id + '"]');
-    decide(id, e.key === 'a' ? 'approved' : 'rejected', e.key === 'a' && ta ? ta.value : undefined);
+    var reason = document.querySelector('.reject-reason[data-id="' + id + '"]');
+    decide(
+      id,
+      e.key === 'a' ? 'approved' : 'rejected',
+      e.key === 'a' && ta ? ta.value : undefined,
+      e.key === 'r' && reason ? reason.value : undefined
+    );
   }
 });
 

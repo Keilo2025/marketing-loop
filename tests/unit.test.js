@@ -8,11 +8,13 @@ import { fileURLToPath } from 'node:url';
 
 import { analyse, prioritise, prioritiseDetailed } from '../dist/core/analyse.js';
 import { applyProposals } from '../dist/core/apply.js';
-import { loadBehavior, parseDelimited } from '../dist/core/behavior.js';
+import { behaviorCopyIds, loadBehavior, parseDelimited } from '../dist/core/behavior.js';
 import { serveCanvas } from '../dist/core/canvas.js';
 import { inferSurfaceFromKey, looksLikeCopy } from '../dist/core/catalogue-extract.js';
 import { writeHandoff } from '../dist/core/handoff.js';
+import { normalizeContentFilter, resolveContentSelection } from '../dist/core/filter.js';
 import { applyGuardrails } from '../dist/core/guardrails.js';
+import { loadReviewHistory } from '../dist/core/history.js';
 import { importAgentOutput, parseAgentOutput } from '../dist/core/ingest.js';
 import { AGENT_TARGETS, install, uninstall } from '../dist/core/install.js';
 import { parseProposals } from '../dist/core/llm.js';
@@ -113,6 +115,86 @@ test('reads the data directory and derives problems', () => {
   assert.ok(report.problems.some((p) => p.severity === 'high'));
 });
 
+test('behavioral evidence boosts canonical copy IDs instead of re-matching display text', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-behavior-ids-'));
+  try {
+    fs.writeFileSync(
+      path.join(directory, 'ga4-cta.csv'),
+      'Label,Conversion Rate\nhero.primaryCta,1\n',
+    );
+    const items = [
+      {
+        id: 'control-copy',
+        catalogueKey: 'hero.secondaryCta',
+        file: 'messages/en.json',
+        line: 1,
+        text: 'See plans',
+        kind: 'cta',
+        surface: 'landing',
+        context: [],
+        length: 9,
+      },
+      {
+        id: 'measured-copy',
+        catalogueKey: 'hero.primaryCta',
+        file: 'messages/en.json',
+        line: 2,
+        text: 'Start now',
+        kind: 'cta',
+        surface: 'landing',
+        context: [],
+        length: 9,
+      },
+    ];
+    const findings = items.map((item) => ({
+      copyId: item.id,
+      rule: 'generic-cta',
+      severity: 'low',
+      message: '',
+      suggests: [],
+    }));
+    const report = loadBehavior(directory, items);
+
+    assert.deepEqual(report.problems[0].relatedCopyIds, ['measured-copy']);
+    assert.deepEqual(behaviorCopyIds(report), ['measured-copy']);
+    assert.equal(
+      prioritiseDetailed(items, findings, behaviorCopyIds(report)).ranked[0].id,
+      'measured-copy',
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('behavior benchmarks are configurable and name their provenance', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-benchmarks-'));
+  try {
+    fs.writeFileSync(
+      path.join(directory, 'checkout.csv'),
+      'Label,Conversion Rate\ncheckout.submit,2\n',
+    );
+    const items = [{
+      id: 'checkout-copy',
+      catalogueKey: 'checkout.submit',
+      file: 'messages/en.json',
+      line: 1,
+      text: 'Pay now',
+      kind: 'cta',
+      surface: 'app',
+      context: [],
+      length: 7,
+    }];
+    const report = loadBehavior(directory, items, {
+      conversion_rate: { value: 2.5, source: 'Q2 checkout baseline' },
+    });
+
+    assert.equal(report.problems.length, 1);
+    assert.match(report.problems[0].evidence, /2\.5%.*Q2 checkout baseline/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 /* ----------------------------------------------------------------- proposals */
 
 test('rewrites a generic cta using a deliverable from the same catalogue namespace', () => {
@@ -150,6 +232,37 @@ test('the engine never introduces a number that was not already there', () => {
     const newDigits = (p.after.match(/\d+/g) ?? []).filter((d) => !p.before.includes(d));
     assert.deepEqual(newDigits, [], `proposal ${p.id} invented a number: ${p.after}`);
   }
+});
+
+test('Content selection limits deterministic proposals and open items by canonical key', () => {
+  const { items } = scanRepo(FIXTURE, config);
+  const context = contextForFixture(items);
+  const findings = analyse(items, context, config);
+  const ranked = prioritise(items, findings, []);
+  const behavior = loadBehavior(path.join(FIXTURE, 'marketing-data'), items);
+  const selection = resolveContentSelection(
+    items,
+    normalizeContentFilter({ types: ['cta'], groups: ['audit'] }),
+    ['de'],
+  );
+
+  const result = propose({
+    items,
+    findings,
+    context,
+    behavior,
+    config,
+    ranked,
+    selection,
+  });
+  const candidates = [
+    ...result.proposals.map((proposal) => proposal.catalogueKey),
+    ...result.openItems.map((open) => open.item.catalogueKey),
+  ];
+
+  assert.ok(candidates.length > 0);
+  assert.ok(candidates.every((key) => selection.resolvedKeys.includes(key)));
+  assert.deepEqual(selection.resolvedKeys, ['audit.action']);
 });
 
 test('deleting an adjective does not strand the wrong article', () => {
@@ -235,9 +348,14 @@ test('review markdown round-trips approvals and edits', () => {
   let md = renderReview(set);
   assert.ok(md.includes('marketing-loop:p1'));
 
-  // Human approves p1 with an edit, leaves p2 untouched.
+  // Human approves p1 with an edit and rejects p2 with an explanation.
   md = md.replace('<!-- marketing-loop:p1 -->\n- [ ] APPROVE', '<!-- marketing-loop:p1 -->\n- [x] APPROVE');
   md = md.replace('```FINAL\nGet my audit\n```', '```FINAL\nRun my free audit\n```');
+  md = md.replace('<!-- marketing-loop:p2 -->\n- [ ] APPROVE\n- [ ] REJECT', '<!-- marketing-loop:p2 -->\n- [ ] APPROVE\n- [x] REJECT');
+  md = md.replace(
+    '```FINAL\nNew\n```\n\n```REASON\n\n```',
+    '```FINAL\nNew\n```\n\n```REASON\nThe promise is not supported by the product.\n```',
+  );
 
   const decisions = collectReview(md);
   const updated = applyDecisions(set, decisions);
@@ -245,6 +363,142 @@ test('review markdown round-trips approvals and edits', () => {
   assert.equal(updated.proposals[0].status, 'approved');
   assert.equal(updated.proposals[0].edited, 'Run my free audit');
   assert.equal(updated.proposals[1].status, 'rejected');
+  assert.equal(updated.proposals[1].rejectionReason, 'The promise is not supported by the product.');
+});
+
+test('archived rejection reasons prevent the engine from repeating rejected copy', () => {
+  const historyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-review-history-'));
+  try {
+    const { items } = scanRepo(FIXTURE, config);
+    const context = contextForFixture(items);
+    const findings = analyse(items, context, config);
+    const ranked = prioritise(items, findings, []);
+    const behavior = loadBehavior(path.join(FIXTURE, 'marketing-data'), items);
+    const auditAction = items.find((item) => item.catalogueKey === 'audit.action');
+    assert.ok(auditAction);
+
+    const runDir = path.join(historyDir, 'run-rejected');
+    fs.mkdirSync(runDir, { recursive: true });
+    writeJson(path.join(runDir, 'proposals.json'), {
+      ...STATE_IDENTITY,
+      runId: 'run-rejected',
+      generatedAt: '2026-07-01T00:00:00.000Z',
+      product: 'test',
+      proposals: [{
+        id: 'rejected-proposal',
+        copyId: auditAction.id,
+        catalogueKey: 'audit.action',
+        sourceLocale: 'en',
+        scopeDigest: STATE_IDENTITY.scopeDigest,
+        file: auditAction.file,
+        line: auditAction.line,
+        kind: auditAction.kind,
+        before: 'Submit',
+        after: 'Get my free deployment audit',
+        alternatives: [],
+        rationale: 'Names the deliverable.',
+        problemSolved: 'The action was vague.',
+        principles: ['specificity'],
+        evidence: [],
+        confidence: 0.8,
+        status: 'rejected',
+        author: 'engine',
+        rejectionReason: 'We do not deliver a free audit.',
+      }],
+    });
+    writeJson(path.join(runDir, 'decisions.json'), {
+      ...STATE_IDENTITY,
+      runId: 'run-rejected',
+      decisions: [{
+        proposalId: 'rejected-proposal',
+        proposalDigest: 'archived-digest',
+        decision: 'rejected',
+        finalText: 'Get my free deployment audit',
+        reason: 'We do not deliver a free audit.',
+        source: 'markdown',
+        decidedAt: '2026-07-01T00:05:00.000Z',
+      }],
+    });
+
+    const history = loadReviewHistory(historyDir);
+    assert.equal(history.entries.length, 1);
+    assert.equal(history.entries[0].catalogueKey, 'audit.action');
+    assert.equal(history.entries[0].reason, 'We do not deliver a free audit.');
+
+    const result = propose({ items, findings, context, behavior, config, ranked, history });
+    assert.equal(
+      result.proposals.some((proposal) => proposal.after === 'Get my free deployment audit'),
+      false,
+    );
+    const open = result.openItems.find((item) => item.item.catalogueKey === 'audit.action');
+    assert.ok(open);
+    assert.match(open.ask, /We do not deliver a free audit/);
+  } finally {
+    fs.rmSync(historyDir, { recursive: true, force: true });
+  }
+});
+
+test('a later CLI propose run consumes the archived review reason', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-review-history-cli-'));
+  fs.cpSync(FIXTURE, cwd, { recursive: true });
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const run = (...args) => spawnSync(
+    process.execPath,
+    [cli, ...args, '--cwd', cwd],
+    { encoding: 'utf8' },
+  );
+
+  try {
+    let command = run('propose');
+    assert.equal(command.status, 0, command.stderr || command.stdout);
+    command = run('review');
+    assert.equal(command.status, 0, command.stderr || command.stdout);
+
+    const out = path.join(cwd, '.marketing-loop');
+    const firstSet = readJsonStrict(path.join(out, 'proposals.json'));
+    const rejected = firstSet.proposals.find(
+      (proposal) =>
+        proposal.catalogueKey === 'audit.action'
+        && proposal.after === 'Get my free deployment audit',
+    );
+    assert.ok(rejected);
+
+    const reviewPath = path.join(out, 'review.md');
+    const markdown = fs.readFileSync(reviewPath, 'utf8');
+    const marker = `<!-- marketing-loop:${rejected.id} -->`;
+    const start = markdown.indexOf(marker);
+    assert.notEqual(start, -1);
+    const next = markdown.indexOf('<!-- marketing-loop:', start + marker.length);
+    const end = next === -1 ? markdown.length : next;
+    const block = markdown.slice(start, end)
+      .replace('- [ ] REJECT', '- [x] REJECT')
+      .replace(
+        '```REASON\n\n```',
+        '```REASON\nWe do not deliver a free audit.\n```',
+      );
+    fs.writeFileSync(reviewPath, markdown.slice(0, start) + block + markdown.slice(end));
+
+    command = run('review', '--collect');
+    assert.equal(command.status, 0, command.stderr || command.stdout);
+    command = run('propose');
+    assert.equal(command.status, 0, command.stderr || command.stdout);
+
+    const nextSet = readJsonStrict(path.join(out, 'proposals.json'));
+    assert.equal(
+      nextSet.proposals.some(
+        (proposal) =>
+          proposal.catalogueKey === 'audit.action'
+          && proposal.after === 'Get my free deployment audit',
+      ),
+      false,
+    );
+    assert.match(
+      fs.readFileSync(path.join(out, 'brief.md'), 'utf8'),
+      /We do not deliver a free audit/,
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 /* --------------------------------------------------------------------- apply */
@@ -330,6 +584,37 @@ test('dry run changes nothing on disk', () => {
   assert.equal(fs.readFileSync(path.join(tmp, file), 'utf8'), original);
   assert.equal(state.set.proposals[0].status, 'pending', 'status is not marked applied on a dry run');
 
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('Content selection is enforced again before secure apply', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-selection-apply-'));
+  const file = 'messages/en/cta.json';
+  const original = '{"action":"Submit","other":"Leave unchanged"}\n';
+  fs.mkdirSync(path.join(tmp, 'messages', 'en'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, file), original);
+  const state = secureApplyState(tmp, [{
+    file,
+    before: 'Submit',
+    after: 'Get my audit',
+  }]);
+  state.set.selection = {
+    filter: normalizeContentFilter({ keys: ['cta.other'] }),
+    resolvedKeys: ['cta.other'],
+    targetLocales: ['de'],
+  };
+
+  const results = applyProposals(state.set, {
+    cwd: tmp,
+    config: state.applyConfig,
+    backupDir: path.join(tmp, 'bk'),
+    inventory: state.inventory,
+    decisions: state.decisions,
+  });
+
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].reason, /Content Loop selection/i);
+  assert.equal(fs.readFileSync(path.join(tmp, file), 'utf8'), original);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -1128,6 +1413,36 @@ test('empty configured claims cannot bypass factual guardrails', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('behavior benchmark config requires a numeric value and explicit source', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-config-'));
+  try {
+    fs.writeFileSync(
+      path.join(tmp, 'marketing-loop.config.json'),
+      JSON.stringify({
+        benchmarks: {
+          conversion_rate: { value: 4.2, source: 'Q2 signup baseline' },
+        },
+      }),
+    );
+    assert.deepEqual(loadConfig(tmp).benchmarks.conversion_rate, {
+      value: 4.2,
+      source: 'Q2 signup baseline',
+    });
+
+    fs.writeFileSync(
+      path.join(tmp, 'marketing-loop.config.json'),
+      JSON.stringify({
+        benchmarks: {
+          conversion_rate: { value: 4.2 },
+        },
+      }),
+    );
+    assert.throws(() => loadConfig(tmp), /benchmarks\.conversion_rate\.source/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('scan uses the configured source catalogue and records file hashes', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-scan-'));
   fs.mkdirSync(path.join(tmp, 'src'));
@@ -1221,6 +1536,60 @@ test('agent output is canonicalized from inventory and cannot approve itself', (
   assert.equal(proposal.status, 'pending');
   assert.equal(proposal.author, 'agent');
   assert.match(proposal.id, /^[a-f0-9]{8}$/);
+});
+
+test('Content selection rejects an otherwise valid agent proposal outside its canonical keys', () => {
+  const scan = scanRepo(FIXTURE, config, 'run-content-import');
+  const selectedItem = scan.items.find((item) => item.catalogueKey === 'audit.action');
+  const outsideItem = scan.items.find((item) => item.catalogueKey !== 'audit.action');
+  assert.ok(selectedItem);
+  assert.ok(outsideItem);
+  const inventory = {
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    repositoryRoot: FIXTURE,
+    filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy,
+    truncated: scan.truncated,
+    items: scan.items,
+  };
+  const set = {
+    schemaVersion: 5,
+    scopeDigest: scan.scopeDigest,
+    sourceLocale: scan.sourceLocale,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    generatedAt: '',
+    product: 'test',
+    selection: {
+      filter: normalizeContentFilter({ keys: ['audit.action'] }),
+      resolvedKeys: ['audit.action'],
+      targetLocales: ['de'],
+    },
+    proposals: [],
+  };
+  const result = importAgentOutput(set, inventory, {
+    schemaVersion: 5,
+    runId: scan.runId,
+    inventoryDigest: scan.inventoryDigest,
+    proposals: [{
+      copyId: outsideItem.id,
+      after: 'A clearer selected outcome',
+      alternatives: [],
+      rationale: 'Clarifies the user outcome without adding facts.',
+      problemSolved: 'The existing wording was vague.',
+      principles: [],
+      evidence: ['Source catalogue wording.'],
+      confidence: 0.8,
+    }],
+  }, config);
+
+  assert.equal(result.accepted, 0);
+  assert.match(result.rejected[0].reason, /outside the active Content Loop selection/i);
 });
 
 test('schema-compliant API-model output goes through canonical untrusted import', () => {
@@ -1545,11 +1914,30 @@ test('canvas requires its launch token and writes digest-bound decisions', async
       body: JSON.stringify({ id: 'deadbeef', status: 'approved', edited: 'Run my audit' }),
     });
     assert.equal(decided.status, 200);
-    assert.deepEqual(stateChanges, [{ status: 'approved', inventory: state.inventory }]);
+
+    const rejected = await fetch(launch.origin + '/api/decide', {
+      method: 'POST',
+      headers: {
+        origin: launch.origin,
+        'content-type': 'application/json',
+        'x-marketing-loop-token': token,
+      },
+      body: JSON.stringify({
+        id: 'deadbeef',
+        status: 'rejected',
+        reason: 'This outcome is not available yet.',
+      }),
+    });
+    assert.equal(rejected.status, 200);
+    assert.deepEqual(stateChanges, [
+      { status: 'approved', inventory: state.inventory },
+      { status: 'rejected', inventory: state.inventory },
+    ]);
 
     const ledger = readJsonStrict(decisionsPath);
     assert.equal(ledger.runId, state.set.runId);
     assert.equal(ledger.decisions[0].proposalId, 'deadbeef');
+    assert.equal(ledger.decisions[0].reason, 'This outcome is not available yet.');
     assert.equal(
       ledger.decisions[0].proposalDigest,
       proposalDigest(state.set.proposals[0], 'Run my audit'),

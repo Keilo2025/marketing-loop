@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { deriveHandoff, writeHandoff } from '../dist/core/handoff.js';
 import { defaultConfig, paths } from '../dist/config.js';
@@ -10,18 +11,21 @@ import { digestInventoryItems } from '../dist/core/scan.js';
 import { rotateActiveRun } from '../dist/core/state.js';
 import { hashText } from '../dist/util/fsx.js';
 
-function handoffState(proposals) {
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+function handoffState(proposals, options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-handoff-'));
-  const scopeDigest = 'scope-digest';
+  const scopeDigest = options.scopeDigest ?? 'scope-digest';
   const sourceLocale = 'en';
+  const runId = options.runId ?? 'run-1';
   const items = proposals.map((proposal, index) => ({
     id: `copy-${proposal.id}`,
     catalogueKey: proposal.key,
     sourceLocale,
     scopeDigest,
-    file: `messages/en-${index}.json`,
+    file: proposal.file ?? `messages/en-${index}.json`,
     line: 1,
-    text: `Source ${proposal.id}`,
+    text: proposal.text ?? `Source ${proposal.id}`,
     kind: 'headline',
     surface: 'landing',
     context: [],
@@ -32,7 +36,7 @@ function handoffState(proposals) {
     schemaVersion: 5,
     scopeDigest,
     sourceLocale,
-    runId: 'run-1',
+    runId,
     inventoryDigest,
     generatedAt: '',
     repositoryRoot: directory,
@@ -45,7 +49,7 @@ function handoffState(proposals) {
     schemaVersion: 5,
     scopeDigest,
     sourceLocale,
-    runId: 'run-1',
+    runId,
     inventoryDigest,
     generatedAt: '',
     product: 'test',
@@ -58,7 +62,7 @@ function handoffState(proposals) {
       file: items.find((item) => item.id === `copy-${proposal.id}`).file,
       line: 1,
       kind: 'headline',
-      before: `Source ${proposal.id}`,
+      before: proposal.text ?? `Source ${proposal.id}`,
       after: `After ${proposal.id}`,
       alternatives: [],
       rationale: '',
@@ -97,6 +101,28 @@ test('handoff contains only pending and approved catalogue keys', () => {
         { key: 'hero.title', status: 'pending' },
       ],
     );
+  } finally {
+    fs.rmSync(state.directory, { recursive: true, force: true });
+  }
+});
+
+test('handoff producer matches the versioned contract fixture', () => {
+  const expected = JSON.parse(fs.readFileSync(
+    path.join(here, 'contracts/marketing-handoff-v1.json'),
+    'utf8',
+  ));
+  const state = handoffState([{
+    id: 'contract-proposal',
+    key: 'hero.startFree',
+    file: 'messages/en.json',
+    text: 'Start free',
+    status: 'pending',
+  }], {
+    runId: 'contract-run',
+    scopeDigest: '976e87b8cff00e0a92f84f08d333b0d87fa4cf98764aef8b79c392edd02ec5a5',
+  });
+  try {
+    assert.deepEqual(deriveHandoff(state.set, state.inventory, state.scope), expected);
   } finally {
     fs.rmSync(state.directory, { recursive: true, force: true });
   }

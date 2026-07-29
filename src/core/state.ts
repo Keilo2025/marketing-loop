@@ -123,6 +123,7 @@ export function decisionSetFrom(
       proposalDigest: proposalDigest(proposal, finalText),
       decision: decision.approved ? 'approved' : 'rejected',
       finalText,
+      ...(!decision.approved && decision.reason ? { reason: decision.reason } : {}),
       source,
       decidedAt: new Date().toISOString(),
     });
@@ -134,6 +135,7 @@ export function decisionSetFrom(
     sourceLocale: set.sourceLocale,
     runId: set.runId,
     inventoryDigest: set.inventoryDigest,
+    ...(set.selection ? { selectionDigest: contentSelectionDigest(set) } : {}),
     decisions: recorded,
   };
 }
@@ -154,6 +156,12 @@ export function validateDecisionSet(set: ProposalSet, ledger: DecisionSet): stri
   if (!set.inventoryDigest || ledger.inventoryDigest !== set.inventoryDigest) {
     errors.push('decision inventory digest does not match the active inventory');
   }
+  const expectedSelectionDigest = set.selection
+    ? contentSelectionDigest(set)
+    : undefined;
+  if (ledger.selectionDigest !== expectedSelectionDigest) {
+    errors.push('decision Content Loop selection does not match the active run');
+  }
 
   const proposals = new Map(set.proposals.map((proposal) => [proposal.id, proposal]));
   const seen = new Set<string>();
@@ -171,8 +179,15 @@ export function validateDecisionSet(set: ProposalSet, ledger: DecisionSet): stri
     if (decision.proposalDigest !== proposalDigest(proposal, decision.finalText)) {
       errors.push(`proposal digest mismatch for ${decision.proposalId}`);
     }
+    if (decision.reason !== undefined && !decision.reason.trim()) {
+      errors.push(`rejection reason is blank for ${decision.proposalId}`);
+    }
   }
   return errors;
+}
+
+function contentSelectionDigest(set: ProposalSet): string {
+  return hashText(JSON.stringify(set.selection));
 }
 
 function requireIdentity(
@@ -195,12 +210,12 @@ function requireIdentity(
 function expandDecisions(
   set: ProposalSet,
   decisions: Decision[],
-): Map<string, { approved: boolean; finalText?: string }> {
+): Map<string, { approved: boolean; finalText?: string; reason?: string }> {
   const byId = new Map(decisions.map((decision) => [decision.proposalId, decision]));
   const explicit = new Set(
     decisions.filter((decision) => decision.explicit !== false).map((decision) => decision.proposalId),
   );
-  const carried = new Map<string, { approved: boolean; finalText?: string }>();
+  const carried = new Map<string, { approved: boolean; finalText?: string; reason?: string }>();
 
   for (const decision of decisions) {
     if (!decision.fanOut) continue;
@@ -210,11 +225,12 @@ function expandDecisions(
       carried.set(siblingId, {
         approved: decision.approved,
         finalText: decision.finalText,
+        reason: decision.reason,
       });
     }
   }
 
-  const expanded = new Map<string, { approved: boolean; finalText?: string }>();
+  const expanded = new Map<string, { approved: boolean; finalText?: string; reason?: string }>();
   for (const proposal of set.proposals) {
     const carriedDecision = carried.get(proposal.id);
     const direct = carriedDecision ? undefined : byId.get(proposal.id);

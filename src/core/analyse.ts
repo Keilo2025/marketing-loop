@@ -252,16 +252,16 @@ export interface Prioritised {
 export function prioritise(
   items: CopyItem[],
   findings: CopyFinding[],
-  behaviorSubjects: string[] = [],
+  behaviorCopyIds: string[] = [],
   surfaces: Surface[] = DEFAULT_SURFACES,
 ): CopyItem[] {
-  return prioritiseDetailed(items, findings, behaviorSubjects, surfaces).ranked;
+  return prioritiseDetailed(items, findings, behaviorCopyIds, surfaces).ranked;
 }
 
 export function prioritiseDetailed(
   items: CopyItem[],
   findings: CopyFinding[],
-  behaviorSubjects: string[] = [],
+  behaviorCopyIds: string[] = [],
   surfaces: Surface[] = DEFAULT_SURFACES,
 ): Prioritised {
   const score = new Map<string, number>();
@@ -292,26 +292,20 @@ export function prioritiseDetailed(
     candidates.push(item);
   }
 
+  const measuredIds = new Set(behaviorCopyIds);
   const ranked = candidates
     .map((item) => {
       let s = score.get(item.id) ?? 0;
       s += kindBoost[item.kind] ?? 0;
       s += surfaceBoost[item.surface] ?? 0;
       // Anything the behavioural data pointed at jumps the queue.
-      if (behaviorSubjects.some((subject) => matches(item.text, subject))) s += 10;
+      if (measuredIds.has(item.id)) s += 10;
       return { item, s };
     })
     .sort((a, b) => b.s - a.s)
     .map((x) => x.item);
 
   return { ranked, outOfScope };
-}
-
-function matches(text: string, subject: string): boolean {
-  const a = text.toLowerCase().trim();
-  const b = subject.toLowerCase().trim();
-  if (!b) return false;
-  return a === b || a.includes(b) || b.includes(a);
 }
 
 export function findingsFor(findings: CopyFinding[], copyId: string): CopyFinding[] {

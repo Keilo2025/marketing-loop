@@ -13,12 +13,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type {
   BehaviorProblem,
+  BehaviorBenchmarks,
   BehaviorReport,
   BehaviorSignal,
   BehaviorSource,
   CopyItem,
   FunnelStep,
 } from '../types.js';
+import { DEFAULT_BEHAVIOR_BENCHMARKS } from '../types.js';
 import { exists, read, shortHash } from '../util/fsx.js';
 
 /** Column aliases seen across the common export formats. */
@@ -33,7 +35,15 @@ const COLUMN_MAP: Record<string, string[]> = {
   dropoff: ['drop-off', 'dropoff', 'drop off', 'abandonment', 'drop'],
 };
 
-export function loadBehavior(dataDir: string, copy: CopyItem[]): BehaviorReport {
+export function loadBehavior(
+  dataDir: string,
+  copy: CopyItem[],
+  benchmarks: Partial<BehaviorBenchmarks> = DEFAULT_BEHAVIOR_BENCHMARKS,
+): BehaviorReport {
+  const resolvedBenchmarks: BehaviorBenchmarks = {
+    ...DEFAULT_BEHAVIOR_BENCHMARKS,
+    ...benchmarks,
+  };
   const report: BehaviorReport = {
     signals: [],
     funnel: [],
@@ -70,7 +80,7 @@ export function loadBehavior(dataDir: string, copy: CopyItem[]): BehaviorReport 
     }
   }
 
-  report.problems = deriveProblems(report, copy);
+  report.problems = deriveProblems(report, copy, resolvedBenchmarks);
   return report;
 }
 
@@ -226,20 +236,20 @@ function parseNotes(content: string): string[] {
 
 /* -------------------------------------------------------------- inference */
 
-/** Rough industry reference points. Beaten by anything in your own data. */
-const BENCHMARKS: Record<string, number> = {
-  conversion_rate: 3.5,
-  bounce_rate: 55,
-  scroll_depth: 50,
-  dropoff: 30,
-};
-
-function deriveProblems(report: BehaviorReport, copy: CopyItem[]): BehaviorProblem[] {
+function deriveProblems(
+  report: BehaviorReport,
+  copy: CopyItem[],
+  benchmarks: BehaviorBenchmarks,
+): BehaviorProblem[] {
   const problems: BehaviorProblem[] = [];
 
   for (const signal of report.signals) {
-    const benchmark = signal.benchmark ?? BENCHMARKS[signal.metric];
+    const configured = benchmarks[signal.metric as keyof BehaviorBenchmarks];
+    const benchmark = signal.benchmark ?? configured?.value;
     if (benchmark === undefined) continue;
+    const benchmarkSource = signal.benchmark === undefined
+      ? configured?.source
+      : signal.note ?? 'behavior export';
 
     const worse =
       signal.metric === 'bounce_rate' || signal.metric === 'dropoff'
@@ -250,7 +260,7 @@ function deriveProblems(report: BehaviorReport, copy: CopyItem[]): BehaviorProbl
     const gap = Math.abs(signal.value - benchmark);
     problems.push({
       subject: signal.subject,
-      evidence: `${signal.metric.replace(/_/g, ' ')} is ${signal.value}${signal.unit === '%' ? '%' : ''} against a ${benchmark}${signal.unit === '%' ? '%' : ''} reference (${signal.source})`,
+      evidence: `${signal.metric.replace(/_/g, ' ')} is ${signal.value}${signal.unit === '%' ? '%' : ''} against a ${benchmark}${signal.unit === '%' ? '%' : ''} benchmark (${benchmarkSource}; ${signal.source})`,
       severity: gap > 25 ? 'high' : gap > 10 ? 'medium' : 'low',
       relatedCopyIds: matchCopy(signal.subject, copy),
     });
@@ -289,10 +299,12 @@ function matchCopy(subject: string, copy: CopyItem[]): string[] {
   return copy
     .filter((item) => {
       const t = item.text.toLowerCase();
+      const key = item.catalogueKey?.toLowerCase() ?? '';
       if (t === s) return true;
+      if (key === s || (s.length > 4 && (key.includes(s) || s.includes(key)))) return true;
       if (s.length > 4 && (t.includes(s) || s.includes(t))) return true;
       if (item.file.toLowerCase().includes(s.replace(/^\//, ''))) return true;
-      return tokens.length > 0 && tokens.every((tok) => t.includes(tok));
+      return tokens.length > 0 && tokens.every((tok) => t.includes(tok) || key.includes(tok));
     })
     .slice(0, 8)
     .map((item) => item.id);
@@ -336,4 +348,9 @@ export function behaviorSubjects(report: BehaviorReport): string[] {
     ...report.problems.map((p) => p.subject),
     ...report.funnel.filter((f) => f.dropoff > 20).map((f) => f.name),
   ];
+}
+
+/** Stable copy identities backed by behavior; ranking must not re-match text. */
+export function behaviorCopyIds(report: BehaviorReport): string[] {
+  return [...new Set(report.problems.flatMap((problem) => problem.relatedCopyIds))];
 }

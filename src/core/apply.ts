@@ -33,6 +33,7 @@ import { digestInventoryItems } from './scan.js';
 import { isSafeRunId, validateDecisionSet } from './state.js';
 import { isCatalogueTarget, resolveCatalogueScope } from './catalogue.js';
 import { inferSurfaceFromKey } from './catalogue-extract.js';
+import { resolveContentSelection } from './filter.js';
 
 export interface ApplyOptions {
   cwd: string;
@@ -115,6 +116,22 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
   if (digestInventoryItems(inventory.items, inventory.scopeDigest, inventory.sourceLocale) !== inventory.inventoryDigest) {
     return failAll('inventory digest does not match its contents');
   }
+  let selectedKeys: Set<string> | undefined;
+  if (set.selection) {
+    try {
+      const selection = resolveContentSelection(
+        inventory.items,
+        set.selection.filter,
+        set.selection.targetLocales,
+      );
+      if (JSON.stringify(selection.resolvedKeys) !== JSON.stringify(set.selection.resolvedKeys)) {
+        return failAll('Content Loop selection does not match the active inventory');
+      }
+      selectedKeys = new Set(selection.resolvedKeys);
+    } catch (error) {
+      return failAll(error instanceof Error ? error.message : String(error));
+    }
+  }
   const decisionErrors = validateDecisionSet(set, decisions);
   if (decisionErrors.length) return failAll(decisionErrors.join('; '));
   if (!isSafeRunId(set.runId)) {
@@ -137,6 +154,9 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
     try {
       const item = itemById.get(proposal.copyId);
       if (!item) throw new Error('copyId is not present in the active inventory');
+      if (selectedKeys && !selectedKeys.has(item.catalogueKey)) {
+        throw new Error(`proposal ${proposal.id} is outside the active Content Loop selection`);
+      }
       if (
         item.sourceLocale !== scope.sourceLocale ||
         !isCatalogueTarget(scope, item.file)

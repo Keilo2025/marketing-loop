@@ -51,7 +51,12 @@ export function renderReport(set: ProposalSet, results: ApplyResult[]): string {
   if (rejected.length) {
     s.push(`## Rejected (${rejected.length})`);
     s.push('');
-    for (const p of rejected) s.push(`- \`${p.file}:${p.line}\` — ${cell(p.after)}`);
+    for (const p of rejected) {
+      s.push(
+        `- \`${p.file}:${p.line}\` — ${cell(p.after)}` +
+        `${p.rejectionReason ? ` — reason: ${cell(p.rejectionReason)}` : ''}`,
+      );
+    }
     s.push('');
   }
 

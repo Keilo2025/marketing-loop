@@ -32,7 +32,8 @@ export function renderReview(set: ProposalSet): string {
   s.push('');
   s.push('1. For each block, tick `APPROVE` or `REJECT` by putting an `x` in the box.');
   s.push('2. To change the wording, edit the text inside the `FINAL` block. Whatever is in there wins.');
-  s.push('3. Save, then run `npx marketing-loop apply`.');
+  s.push('3. If you reject a proposal, explain why in its `REASON` block so the next run can learn from it.');
+  s.push('4. Save, then run `npx marketing-loop apply`.');
   s.push('');
   s.push('Anything left unticked is treated as a reject. Nothing is written to your code until you run `apply`.');
   s.push('');
@@ -121,6 +122,10 @@ function renderProposal(p: Proposal): string[] {
   s.push(p.after);
   s.push('```');
   s.push('');
+  s.push('```REASON');
+  s.push(p.rejectionReason ?? '');
+  s.push('```');
+  s.push('');
   s.push('---');
   s.push('');
 
@@ -131,6 +136,8 @@ export interface Decision {
   proposalId: string;
   approved: boolean;
   finalText?: string;
+  /** Human explanation for a rejection. */
+  reason?: string;
   /** The human ticked "same decision for all identical copies" on this block. */
   fanOut?: boolean;
   /**
@@ -156,9 +163,16 @@ export function collectReview(markdown: string): Decision[] {
     const approved = /- \[[xX]\]\s*APPROVE/.test(block);
     const rejected = /- \[[xX]\]\s*REJECT/.test(block);
     const fanOut = /- \[[xX]\]\s*SAME DECISION FOR ALL/.test(block);
+    const reason = /```REASON\n([\s\S]*?)\n```/.exec(block)?.[1]?.trim();
 
     if (!approved || rejected) {
-      decisions.push({ proposalId: id, approved: false, fanOut, explicit: rejected });
+      decisions.push({
+        proposalId: id,
+        approved: false,
+        ...(reason ? { reason } : {}),
+        fanOut,
+        explicit: rejected,
+      });
       continue;
     }
 
@@ -200,13 +214,17 @@ export function foldDecisions(set: ProposalSet, decisions: Decision[]): FoldResu
   );
 
   // Work out what each fan-out implies before touching anything.
-  const carried = new Map<string, { approved: boolean; finalText?: string }>();
+  const carried = new Map<string, { approved: boolean; finalText?: string; reason?: string }>();
   for (const decision of decisions) {
     if (!decision.fanOut) continue;
     const lead = set.proposals.find((p) => p.id === decision.proposalId);
     for (const sibId of lead?.siblings ?? []) {
       if (explicit.has(sibId) || carried.has(sibId)) continue;
-      carried.set(sibId, { approved: decision.approved, finalText: decision.finalText });
+      carried.set(sibId, {
+        approved: decision.approved,
+        finalText: decision.finalText,
+        reason: decision.reason,
+      });
     }
   }
 
@@ -218,10 +236,22 @@ export function foldDecisions(set: ProposalSet, decisions: Decision[]): FoldResu
     const call = decision ?? (carry ? { ...carry, proposalId: p.id } : undefined);
 
     if (!call) return p;
-    if (!call.approved) return { ...p, status: 'rejected' as const };
+    if (!call.approved) {
+      return {
+        ...p,
+        status: 'rejected' as const,
+        edited: undefined,
+        ...(call.reason ? { rejectionReason: call.reason } : { rejectionReason: undefined }),
+      };
+    }
 
     const edited = call.finalText && call.finalText !== p.after ? call.finalText : undefined;
-    return { ...p, status: 'approved' as const, ...(edited ? { edited } : {}) };
+    return {
+      ...p,
+      status: 'approved' as const,
+      rejectionReason: undefined,
+      ...(edited ? { edited } : { edited: undefined }),
+    };
   });
 
   return { set: { ...set, proposals }, fannedOut: carried.size };
