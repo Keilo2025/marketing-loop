@@ -48,6 +48,8 @@ interface LanguageHandoffState {
 
 interface LanguageModule {
   CONTENT_LOOP_API_VERSION?: unknown;
+  inspectLanguageLoop?: AnyFunction;
+  runLanguageLoop?: AsyncFunction;
   requireConfig: AnyFunction;
   loadMemory: AnyFunction;
   saveMemory: AnyFunction;
@@ -113,12 +115,23 @@ async function runWithLanguageLoop(
     memory = asMemory(language.loadMemory(options.cwd, config.sourceLocale));
     validateSelection(input, config, memory);
 
-    const allKeys = Object.keys(memory.entries).sort();
-    const filtered = !sameMembers(input.keys, allKeys);
-    if (filtered && language.CONTENT_LOOP_API_VERSION !== 1) {
+    if (language.CONTENT_LOOP_API_VERSION !== 1) {
       throw new Error(
-        'Filtered Content Loop requires Language Loop CONTENT_LOOP_API_VERSION = 1; '
-        + 'the installed consumer cannot guarantee key-scoped translation.',
+        'Content Loop requires Language Loop CONTENT_LOOP_API_VERSION = 1; '
+        + 'the installed consumer cannot guarantee scoped translation.',
+      );
+    }
+    if (
+      language.CONTENT_LOOP_API_VERSION === 1
+      && language.inspectLanguageLoop
+      && language.runLanguageLoop
+    ) {
+      return await runWithOrchestrationFacade(
+        language,
+        config,
+        memory,
+        options,
+        input,
       );
     }
 
@@ -253,6 +266,181 @@ async function runWithLanguageLoop(
   }
 }
 
+async function runWithOrchestrationFacade(
+  language: LanguageModule,
+  config: LanguageConfig,
+  memory: LanguageMemory,
+  options: LanguageLoopAdapterOptions,
+  input: ContentLanguageRunInput,
+): Promise<ContentLanguageSnapshot> {
+  const scope = {
+    cwd: options.cwd,
+    keys: [...input.keys],
+    locales: [...input.locales],
+  };
+  const inspected = asFacadeSnapshot(language.inspectLanguageLoop!(scope));
+  assertFacadeScope(inspected, input);
+  const inspectedProgress = facadeProgress(inspected.progress, input);
+  input.onProgress?.(inspectedProgress);
+  const compatible = inspected.marketing.compatible;
+  const marketingBlocked = inspected.marketing.selectedUnresolvedKeys.length;
+  const inspectedError = facadeError(inspected.error);
+
+  if (!compatible || inspected.phase === 'blocked') {
+    return snapshotFromProgress(inspectedProgress, {
+      compatible,
+      status: 'blocked',
+      adoptedSourceKeys: [],
+      marketingBlocked,
+      error: inspectedError
+        ?? (!compatible
+          ? 'Language Loop rejected the marketing handoff'
+          : 'Language Loop reported an invalid selected translation state'),
+    });
+  }
+  if (inspected.phase === 'needs-init') {
+    return snapshotFromProgress(inspectedProgress, {
+      compatible: true,
+      status: 'blocked',
+      adoptedSourceKeys: [],
+      marketingBlocked,
+      error: 'Language Loop requires project configuration before translation',
+    });
+  }
+  if (inspected.phase === 'needs-extraction') {
+    return snapshotFromProgress(inspectedProgress, {
+      compatible: true,
+      status: 'blocked',
+      adoptedSourceKeys: [],
+      marketingBlocked,
+      error: 'Selected messages still require Language Loop extraction before translation',
+    });
+  }
+  if (inspected.phase === 'waiting-marketing' || marketingBlocked) {
+    return snapshotFromProgress(inspectedProgress, {
+      compatible: true,
+      status: 'blocked',
+      adoptedSourceKeys: [],
+      marketingBlocked,
+      error: `${marketingBlocked} selected key(s) are still waiting for marketing approval`,
+    });
+  }
+  if (inspected.phase === 'needs-human') {
+    return snapshotFromProgress(inspectedProgress, {
+      compatible: true,
+      status: 'needs-human',
+      adoptedSourceKeys: [],
+      marketingBlocked: 0,
+      error: 'One or more selected translations require a human decision',
+    });
+  }
+  if (inspected.phase === 'complete') {
+    if (!allAccepted(inspectedProgress)) {
+      return snapshotFromProgress(inspectedProgress, {
+        compatible: true,
+        status: 'blocked',
+        adoptedSourceKeys: [],
+        marketingBlocked: 0,
+        error: 'Language Loop inspection reported complete with outstanding selected languages',
+      });
+    }
+    return snapshotFromProgress(inspectedProgress, {
+      compatible: true,
+      status: 'complete',
+      adoptedSourceKeys: [],
+      marketingBlocked: 0,
+    });
+  }
+  if (!input.execute) {
+    return snapshotFromProgress(inspectedProgress, {
+      compatible: true,
+      status: 'ready',
+      adoptedSourceKeys: [],
+      marketingBlocked: 0,
+    });
+  }
+
+  const providers = providersFor(language, config, options);
+  let summary: FacadeSummary;
+  try {
+    summary = asFacadeSummary(await language.runLanguageLoop!({
+      ...scope,
+      translator: providers.translator,
+      judge: providers.judge,
+      onProgress: (event: unknown) => {
+        const progress = facadeEventProgress(event, input);
+        input.onProgress?.(progress);
+      },
+    }));
+    assertFacadeVersion(summary);
+    assertFacadeScope(summary, input);
+    facadeProgress(summary.progress, input);
+  } catch (error) {
+    const errorText = message(error);
+    let durableProgress = inspectedProgress;
+    try {
+      memory = asMemory(language.loadMemory(options.cwd, config.sourceLocale));
+      durableProgress = progressFor(memory, input.keys, input.locales);
+      input.onProgress?.(durableProgress);
+    } catch {
+      // Preserve the provider/scope error; the inspected snapshot remains a
+      // safe lower bound when durable memory cannot be reloaded.
+    }
+    return snapshotFromProgress(durableProgress, {
+      compatible: true,
+      status: 'blocked',
+      adoptedSourceKeys: [],
+      marketingBlocked: 0,
+      error: errorText,
+      retryable: transient(errorText),
+    });
+  }
+
+  memory = asMemory(language.loadMemory(options.cwd, config.sourceLocale));
+  const progress = progressFor(memory, input.keys, input.locales);
+  input.onProgress?.(progress);
+  const outstanding = progress.filter((row) => !rowAccepted(row));
+  const common = {
+    compatible: true,
+    adoptedSourceKeys: [] as string[],
+    marketingBlocked: Number(summary.marketingBlocked ?? 0),
+  };
+  if (summary.status === 'needs-human' || progress.some((row) => row.needsHuman)) {
+    return snapshot(memory, input, {
+      ...common,
+      status: 'needs-human',
+      error: 'One or more selected translations exhausted automated judge attempts',
+    });
+  }
+  if (summary.status === 'waiting-marketing' || common.marketingBlocked) {
+    return snapshot(memory, input, {
+      ...common,
+      status: 'blocked',
+      error: 'Selected translations are waiting for marketing approval',
+    });
+  }
+  if (summary.status === 'no-progress') {
+    return snapshot(memory, input, {
+      ...common,
+      status: 'blocked',
+      error: 'Language Loop made no progress before every selected language was accepted',
+    });
+  }
+  if (summary.status === 'complete' && outstanding.length) {
+    return snapshot(memory, input, {
+      ...common,
+      status: 'blocked',
+      error: `Language Loop reported complete with outstanding selected languages: ${
+        outstanding.map((row) => row.locale).join(', ')
+      }`,
+    });
+  }
+  return snapshot(memory, input, {
+    ...common,
+    status: outstanding.length ? 'running' : 'complete',
+  });
+}
+
 async function loadLanguageModule(
   options: LanguageLoopAdapterOptions,
 ): Promise<LanguageModule> {
@@ -337,6 +525,22 @@ function snapshot(
       rework: 0,
       needsHuman: 0,
     }));
+  return {
+    ...fields,
+    pending: progress.reduce((sum, row) => sum + row.pending + row.rework, 0),
+    applied: progress.reduce((sum, row) => sum + row.accepted, 0),
+    needsHuman: progress.reduce((sum, row) => sum + row.needsHuman, 0),
+    progress,
+  };
+}
+
+function snapshotFromProgress(
+  progress: ContentLanguageProgress[],
+  fields: Omit<
+    ContentLanguageSnapshot,
+    'pending' | 'applied' | 'needsHuman' | 'progress'
+  >,
+): ContentLanguageSnapshot {
   return {
     ...fields,
     pending: progress.reduce((sum, row) => sum + row.pending + row.rework, 0),
@@ -466,6 +670,202 @@ function asSummary(value: unknown): LanguageSummary {
     throw new Error('Language Loop run summary has an invalid status');
   }
   return summary as unknown as LanguageSummary;
+}
+
+interface FacadeSnapshot {
+  schemaVersion: number;
+  apiVersion: number;
+  phase: string;
+  filter: {
+    selectedKeys: string[];
+  };
+  targetLocales: string[];
+  marketing: {
+    compatible: boolean;
+    selectedUnresolvedKeys: string[];
+  };
+  progress: unknown[];
+  error?: unknown;
+}
+
+interface FacadeSummary extends LanguageSummary {
+  schemaVersion: number;
+  apiVersion: number;
+  filter: {
+    selectedKeys: string[];
+  };
+  targetLocales: string[];
+  progress: unknown[];
+}
+
+const FACADE_PHASES = new Set([
+  'needs-init',
+  'needs-extraction',
+  'ready-translation',
+  'waiting-marketing',
+  'needs-human',
+  'complete',
+  'blocked',
+]);
+
+function asFacadeSnapshot(value: unknown): FacadeSnapshot {
+  const snapshot = record(value, 'Language Loop orchestration snapshot');
+  assertFacadeVersion(snapshot);
+  const filter = record(snapshot.filter, 'Language Loop orchestration snapshot.filter');
+  const marketing = record(
+    snapshot.marketing,
+    'Language Loop orchestration snapshot.marketing',
+  );
+  const selectedKeys = stringArray(
+    filter.selectedKeys,
+    'Language Loop orchestration selectedKeys',
+  );
+  const targetLocales = stringArray(
+    snapshot.targetLocales,
+    'Language Loop orchestration targetLocales',
+  );
+  const selectedUnresolvedKeys = stringArray(
+    marketing.selectedUnresolvedKeys,
+    'Language Loop orchestration selectedUnresolvedKeys',
+  );
+  if (typeof snapshot.phase !== 'string' || !FACADE_PHASES.has(snapshot.phase)) {
+    throw new Error(`Language Loop orchestration snapshot has invalid lifecycle phase ${
+      String(snapshot.phase)
+    }`);
+  }
+  if (typeof marketing.compatible !== 'boolean') {
+    throw new Error('Language Loop orchestration snapshot has invalid marketing compatibility');
+  }
+  if (!Array.isArray(snapshot.progress)) {
+    throw new Error('Language Loop orchestration snapshot.progress must be an array');
+  }
+  return {
+    schemaVersion: 1,
+    apiVersion: 1,
+    phase: snapshot.phase,
+    filter: { selectedKeys },
+    targetLocales,
+    marketing: {
+      compatible: marketing.compatible,
+      selectedUnresolvedKeys,
+    },
+    progress: snapshot.progress,
+    ...(snapshot.error === undefined ? {} : { error: snapshot.error }),
+  };
+}
+
+function asFacadeSummary(value: unknown): FacadeSummary {
+  const result = record(value, 'Language Loop orchestration result');
+  assertFacadeVersion(result);
+  const summary = asSummary(result);
+  const filter = record(result.filter, 'Language Loop orchestration result.filter');
+  const selectedKeys = stringArray(
+    filter.selectedKeys,
+    'Language Loop orchestration result selectedKeys',
+  );
+  const targetLocales = stringArray(
+    result.targetLocales,
+    'Language Loop orchestration result targetLocales',
+  );
+  if (!Array.isArray(result.progress)) {
+    throw new Error('Language Loop orchestration result.progress must be an array');
+  }
+  return {
+    ...summary,
+    schemaVersion: 1,
+    apiVersion: 1,
+    filter: { selectedKeys },
+    targetLocales,
+    progress: result.progress,
+  };
+}
+
+function assertFacadeVersion(value: Record<string, unknown> | {
+  schemaVersion: number;
+  apiVersion: number;
+}): void {
+  if (value.schemaVersion !== 1 || value.apiVersion !== 1) {
+    throw new Error('Language Loop orchestration must use schemaVersion 1 and apiVersion 1');
+  }
+}
+
+function assertFacadeScope(
+  snapshot: Pick<FacadeSnapshot, 'filter' | 'targetLocales'>,
+  input: ContentLanguageRunInput,
+): void {
+  if (
+    !sameMembers(snapshot.filter.selectedKeys, input.keys)
+    || !sameMembers(snapshot.targetLocales, input.locales)
+  ) {
+    throw new Error('Language Loop orchestration changed the selected Content Loop scope');
+  }
+}
+
+function facadeEventProgress(
+  value: unknown,
+  input: ContentLanguageRunInput,
+): ContentLanguageProgress[] {
+  const event = record(value, 'Language Loop orchestration progress event');
+  if (event.schemaVersion !== 1) {
+    throw new Error('Language Loop orchestration progress event must use schemaVersion 1');
+  }
+  const selectedKeys = stringArray(
+    event.selectedKeys,
+    'Language Loop orchestration progress event selectedKeys',
+  );
+  if (!sameMembers(selectedKeys, input.keys)) {
+    throw new Error('Language Loop orchestration progress event changed the selected Content Loop scope');
+  }
+  return facadeProgress(event.progress, input);
+}
+
+function facadeProgress(
+  value: unknown,
+  input: ContentLanguageRunInput,
+): ContentLanguageProgress[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Language Loop orchestration progress must be an array');
+  }
+  const byLocale = new Map<string, ContentLanguageProgress>();
+  for (const candidate of value) {
+    const row = record(candidate, 'Language Loop orchestration progress row');
+    if (
+      typeof row.locale !== 'string'
+      || !Number.isInteger(row.total)
+      || !Number.isInteger(row.accepted)
+      || !Number.isInteger(row.pending)
+      || !Number.isInteger(row.needsHuman)
+    ) {
+      throw new Error('Language Loop orchestration progress row is invalid');
+    }
+    if (byLocale.has(row.locale)) {
+      throw new Error(`Language Loop orchestration progress repeats locale ${row.locale}`);
+    }
+    byLocale.set(row.locale, {
+      locale: row.locale,
+      total: Number(row.total),
+      accepted: Number(row.accepted),
+      pending: Number(row.pending),
+      rework: 0,
+      needsHuman: Number(row.needsHuman),
+    });
+  }
+  const progress = input.locales.map((locale) => byLocale.get(locale));
+  if (
+    !sameMembers([...byLocale.keys()], input.locales)
+    ||
+    progress.some((row) => !row)
+    || progress.some((row) => row!.total !== input.keys.length)
+  ) {
+    throw new Error('Language Loop orchestration progress does not match the selected scope');
+  }
+  return progress as ContentLanguageProgress[];
+}
+
+function facadeError(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const error = record(value, 'Language Loop orchestration error');
+  return typeof error.message === 'string' ? error.message : undefined;
 }
 
 function stringArray(value: unknown, label: string): string[] {

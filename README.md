@@ -86,7 +86,10 @@ language-loop apply
 
 `language-loop extract` moves hardcoded text into the source catalogue before marketing work. Once marketing edits are approved, translations are stale. Run `language-loop translate` only after marketing decisions have settled. Marketing-loop never rewrites target locales or application code.
 
-The key-based handshake requires `marketing-loop` 0.5+ and `language-loop` 0.4+. Upgrade both together. `language-loop` must refuse unresolved legacy schema-v4 marketing state instead of guessing identity from raw text.
+The unified Content Loop requires `marketing-loop` 0.5+ and
+`language-loop` 0.4.1+. Upgrade both together. Language Loop 0.4.1 provides
+the schema-v1 handoff consumer and filtered orchestration API; pre-0.4.1
+releases are outside the supported Content dependency range.
 
 The producer contract is pinned at [`tests/contracts/marketing-handoff-v1.json`](tests/contracts/marketing-handoff-v1.json). A compatible consumer must validate schema version 1, the catalogue scope fields, canonical key, source-catalogue file, full SHA-256 source hash, and `pending`/`approved` status. It must freeze only those exact unresolved keys.
 
@@ -96,15 +99,23 @@ capability:
 ```ts
 export const CONTENT_LOOP_API_VERSION = 1;
 
-interface RunTranslationLoopInput {
+interface RunLanguageLoopInput {
+  cwd: string;
   keys?: string[];
+  locales?: string[];
+  translator: RunnerTranslator;
+  judge: RunnerJudge;
 }
+
+inspectLanguageLoop(input: InspectLanguageLoopInput): LanguageLoopSnapshot;
+runLanguageLoop(input: RunLanguageLoopInput): Promise<RunLanguageLoopResult>;
 ```
 
-When `keys` is present, the consumer must restrict every batch, retry, judge
-decision, memory update, and target-catalogue write to those exact keys. An
-older consumer may be used only when the Content selection is the complete
-catalogue; the adapter refuses a filtered run if the marker is missing.
+Marketing Loop prefers this published orchestration facade from Language
+Loop's public exports. When `keys` is present, the consumer must restrict every
+batch, retry, judge decision, memory update, and target-catalogue write to those
+exact keys. The adapter still fails closed if the capability marker is missing,
+even though the package peer policy excludes pre-orchestration releases.
 
 See [`docs/content-loop-compatibility.md`](docs/content-loop-compatibility.md)
 for the lifecycle/API contract, dependency policy, and migration checklist.
@@ -174,7 +185,7 @@ Version 0.5 is an intentional catalogue-only boundary change:
 - Standalone use remains supported through the explicit `catalogue` block or the safe `messages/en.json` default; `language-loop` is not a runtime dependency.
 - When `language-loop` is present, upgrade the tools as a coordinated optional lifecycle: extract first, settle and apply marketing decisions, then translate, judge, and apply locales. The atomic handoff freezes only unresolved canonical source keys.
 - For one user-facing app, replace the separately operated marketing/translation sequence with `marketing-loop content`. Keep the old commands only where staged automation explicitly needs them.
-- Install a compatible `language-loop >=0.4.0 <0.5.0` peer for Content translation. Filtered runs also require `CONTENT_LOOP_API_VERSION = 1`; this runtime capability gate is intentionally stricter than semver alone.
+- Install the published compatible `language-loop >=0.4.1 <0.5.0` peer for Content translation. The runtime `CONTENT_LOOP_API_VERSION = 1` check remains a defense-in-depth capability gate.
 - Existing schema-v1 consumers may ignore the additive `selection` block. Content-capable consumers must honor the adapter's exact `keys` and `locales`.
 
 ## Install guidance for agents

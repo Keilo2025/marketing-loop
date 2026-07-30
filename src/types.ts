@@ -253,6 +253,30 @@ export interface ContentSelection {
   targetLocales: string[];
 }
 
+/**
+ * Language Loop's schema-v1 handoff vocabulary. Marketing keeps `types` in
+ * its user-facing filter model and serializes them as `categories` only in
+ * the additive requested-filter audit field.
+ */
+export interface ContentHandoffFilter {
+  categories: string[];
+  groups: string[];
+  keys: string[];
+}
+
+export interface ContentHandoffSelection {
+  /**
+   * Exact-key filter consumed by Language Loop. Canonical keys preserve
+   * Marketing's cross-field intersection semantics across the union-based
+   * consumer filter contract.
+   */
+  filter: ContentHandoffFilter;
+  /** Original normalized user selectors, retained for status and audit. */
+  requestedFilter: ContentHandoffFilter;
+  resolvedKeys: string[];
+  targetLocales: string[];
+}
+
 export interface ProposalSet {
   schemaVersion: 5;
   scopeDigest: string;
@@ -367,7 +391,7 @@ export interface MarketingHandoff {
   sourceLocale: string;
   layout: CatalogueLayout;
   /** Additive Content Loop context; schema-v1 consumers may ignore it. */
-  selection?: ContentSelection;
+  selection?: ContentHandoffSelection;
   unresolved: HandoffEntry[];
 }
 

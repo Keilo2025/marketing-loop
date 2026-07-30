@@ -135,6 +135,11 @@ test('key classification is independent from file names', () => {
   assert.equal(inferKindFromKey('search.noResults'), 'empty-state');
   assert.equal(inferKindFromKey('account.notFound'), 'empty-state');
   assert.equal(inferKindFromKey('account.search.noResults'), 'empty-state');
+  assert.equal(inferKindFromKey('hero.body'), 'body');
+  assert.equal(inferKindFromKey('hero.headline'), 'headline');
+  assert.equal(inferKindFromKey('error.message'), 'error');
+  assert.equal(inferKindFromKey('form.error.message'), 'error');
+  assert.equal(inferKindFromKey('emptyState.message'), 'empty-state');
   assert.equal(inferSurfaceFromKey('privacy.terms.heading'), 'legal');
   assert.equal(inferSurfaceFromKey('newsletter.subject'), 'email');
 });

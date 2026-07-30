@@ -8,7 +8,7 @@ translation dependency. It does not copy Language Loop code or invoke its CLI.
 
 - Marketing-only commands (`scan`, `propose`, `review`, `apply`, `measure`) do
   not require Language Loop at runtime.
-- `content` requires `language-loop >=0.4.0 <0.5.0` when it reaches the
+- `content` requires `language-loop >=0.4.1 <0.5.0` when it reaches the
   translation stage. The module is loaded dynamically, so proposal and human
   review can still start before that optional peer is installed.
 - A local integration build can be selected with `--language-module
@@ -40,8 +40,12 @@ Content Loop may add:
 {
   "selection": {
     "filter": {
-      "schemaVersion": 1,
-      "types": ["cta"],
+      "categories": [],
+      "groups": [],
+      "keys": ["hero.primaryCta"]
+    },
+    "requestedFilter": {
+      "categories": ["cta"],
       "groups": ["hero"],
       "keys": []
     },
@@ -51,9 +55,12 @@ Content Loop may add:
 }
 ```
 
-This is additive: existing schema-v1 consumers may ignore `selection`. The
-Content adapter separately passes its immutable `resolvedKeys` and
-`targetLocales` to the translation runner.
+This is additive: existing schema-v1 consumers may ignore `selection`.
+`selection.filter` deliberately uses exact canonical keys because Language
+Loop combines its filter fields as a union, while Marketing Loop intersects
+different non-empty selector fields. `requestedFilter` preserves the user's
+normalized selectors for audit/status, and `resolvedKeys` is the immutable
+scope passed to translation.
 
 ## Required Language Loop Content API
 
@@ -62,14 +69,25 @@ A consumer that supports filtered runs must export:
 ```ts
 export const CONTENT_LOOP_API_VERSION = 1;
 
-interface RunTranslationLoopInput {
-  // existing fields
+interface LanguageLoopScopeInput {
+  cwd: string;
   keys?: string[];
   locales?: string[];
 }
+
+inspectLanguageLoop(input: LanguageLoopScopeInput): LanguageLoopSnapshot;
+runLanguageLoop(
+  input: LanguageLoopScopeInput & {
+    translator: RunnerTranslator;
+    judge: RunnerJudge;
+    onProgress?: (event: TranslationLoopProgressEvent) => void;
+  },
+): Promise<RunLanguageLoopResult>;
 ```
 
-With `keys`, Language Loop must:
+Marketing Loop prefers this facade from the package's public exports and
+validates its schema/API version, selected keys, selected locales, lifecycle,
+and per-locale progress. With `keys`, Language Loop must:
 
 1. Build pending work from only those canonical keys.
 2. Preserve the key restriction through every batch and judge retry.
@@ -82,8 +100,9 @@ With `keys`, Language Loop must:
 
 Marketing Loop independently reloads Language memory and verifies that matrix.
 It refuses filtered execution without capability version 1, because an older
-JavaScript runner could silently ignore an unknown `keys` property. An
-unfiltered all-keys run remains compatible with a current schema-v1 consumer.
+JavaScript runner could silently ignore an unknown `keys` property. The package
+policy starts at the published orchestration release, 0.4.1; the runtime marker
+remains a defense-in-depth check.
 
 ## Lifecycle states
 
@@ -103,9 +122,11 @@ unfiltered all-keys run remains compatible with a current schema-v1 consumer.
 
 1. Upgrade Marketing Loop to 0.5 and regenerate schema-v5 active marketing
    state with `marketing-loop propose` or `marketing-loop content --restart`.
-2. Upgrade Language Loop to a schema-v1-compatible 0.4 release.
-3. For filtered Content runs, verify that Language Loop exports
-   `CONTENT_LOOP_API_VERSION = 1` and enforces `RunTranslationLoopInput.keys`.
+2. Upgrade Language Loop to the published orchestration release, 0.4.1 or a
+   later compatible 0.4 patch.
+3. Verify that Language Loop exports `CONTENT_LOOP_API_VERSION = 1`,
+   `inspectLanguageLoop`, and `runLanguageLoop`, and enforces the facade's
+   exact `keys`/`locales` scope.
 4. Keep `language-loop.config.json` authoritative for catalogue scope and
    configured target languages.
 5. Replace separately operated marketing and language commands with

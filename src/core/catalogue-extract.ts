@@ -27,12 +27,17 @@ const tokens = (key: string): string[] =>
 export function inferKindFromKey(key: string): CopyKind {
   const keyTokens = tokens(key);
   const parts = new Set(keyTokens);
+  const leaf = key.split('.').at(-1)?.toLowerCase();
   if (hasAny(parts, ['error', 'invalid', 'failed', 'failure', 'fail'])) return 'error';
   if (
     hasAny(parts, ['empty', 'zero', 'noresults', 'notfound'])
     || hasSequence(keyTokens, ['no', 'results'])
     || hasSequence(keyTokens, ['not', 'found'])
   ) return 'empty-state';
+  // A body message under a headline-like surface is still body copy. Keep this
+  // narrow so compound identities such as `errorMessage` retain their stronger
+  // error classification above.
+  if (leaf && ['body', 'copy', 'message', 'description', 'text'].includes(leaf)) return 'body';
   if (hasAny(parts, ['cta', 'button', 'submit', 'action'])) return 'cta';
   if (hasAny(parts, ['subhead', 'subtitle', 'tagline', 'slogan', 'lead'])) return 'subhead';
   if (hasAny(parts, ['headline', 'heading', 'hero', 'title'])) return 'headline';

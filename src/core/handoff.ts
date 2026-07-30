@@ -1,6 +1,8 @@
 import type {
   CatalogueScope,
   HandoffEntry,
+  ContentHandoffSelection,
+  ContentSelection,
   Inventory,
   MarketingHandoff,
   ProposalSet,
@@ -10,6 +12,26 @@ import { hashText, writeJson } from '../util/fsx.js';
 import { isCatalogueTarget } from './catalogue.js';
 import { resolveContentSelection } from './filter.js';
 import { digestInventoryItems } from './scan.js';
+
+/** Serialize Marketing's filter vocabulary into the strict Language contract. */
+export function handoffSelection(
+  selection: ContentSelection,
+): ContentHandoffSelection {
+  return {
+    filter: {
+      categories: [],
+      groups: [],
+      keys: [...selection.resolvedKeys],
+    },
+    requestedFilter: {
+      categories: [...selection.filter.types],
+      groups: [...selection.filter.groups],
+      keys: [...selection.filter.keys],
+    },
+    resolvedKeys: [...selection.resolvedKeys],
+    targetLocales: [...selection.targetLocales],
+  };
+}
 
 /** Derive a portable list of unresolved source-catalogue keys for a consumer. */
 export function deriveHandoff(
@@ -75,7 +97,7 @@ export function deriveHandoff(
     messagesDir: scope.messagesDir,
     sourceLocale: scope.sourceLocale,
     layout: scope.layout,
-    ...(selection ? { selection } : {}),
+    ...(selection ? { selection: handoffSelection(selection) } : {}),
     unresolved,
   };
 }

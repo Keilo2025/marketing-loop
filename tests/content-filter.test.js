@@ -134,7 +134,20 @@ test('schema-v1 handoff persists selection and exposes only selected unresolved 
   };
 
   const handoff = deriveHandoff(set, inventory, scope);
-  assert.deepEqual(handoff.selection, selected);
+  assert.deepEqual(handoff.selection, {
+    filter: {
+      categories: [],
+      groups: [],
+      keys: selected.resolvedKeys,
+    },
+    requestedFilter: {
+      categories: ['cta'],
+      groups: ['hero'],
+      keys: [],
+    },
+    resolvedKeys: selected.resolvedKeys,
+    targetLocales: selected.targetLocales,
+  });
   assert.deepEqual(handoff.unresolved.map((entry) => entry.key), ['hero.primaryCta']);
 
   assert.throws(

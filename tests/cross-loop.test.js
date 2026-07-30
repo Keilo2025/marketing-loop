@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 
 const languageRepo = process.env.LANGUAGE_LOOP_REPO;
 const marketingRoot = fileURLToPath(new URL('..', import.meta.url));
+const marketingPackageRoot = process.env.MARKETING_LOOP_PACKAGE_ROOT ?? marketingRoot;
 
 function run(cli, cwd, ...args) {
   const result = spawnSync(process.execPath, [cli, ...args, '--cwd', cwd], {
@@ -22,13 +23,14 @@ function run(cli, cwd, ...args) {
   return result;
 }
 
-test('catalogue marketing hands one changed key back to language-loop', {
+test('published consumer completes a filtered unified Content Loop without touching out-of-scope messages', {
   skip: !languageRepo && 'set LANGUAGE_LOOP_REPO to the language-loop checkout',
 }, async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-loop-'));
   try {
-    const marketingCli = path.join(marketingRoot, 'dist/cli.js');
+    const marketingCli = path.join(marketingPackageRoot, 'dist/cli.js');
     const languageDist = path.join(languageRepo, 'dist/core');
+    const languageModule = path.resolve(languageRepo, 'dist/index.js');
     fs.mkdirSync(path.join(cwd, 'src'));
     fs.mkdirSync(path.join(cwd, 'messages'));
     fs.mkdirSync(path.join(cwd, '.language-loop'));
@@ -135,38 +137,57 @@ test('catalogue marketing hands one changed key back to language-loop', {
       },
     }, null, 2));
 
-    run(marketingCli, cwd, 'propose');
-    run(marketingCli, cwd, 'review');
+    run(
+      marketingCli,
+      cwd,
+      'content',
+      '--types',
+      'headline',
+      '--groups',
+      'hero',
+      '--locales',
+      'de',
+      '--language-module',
+      languageModule,
+    );
     const reviewFile = path.join(cwd, '.marketing-loop/review.md');
     const review = fs.readFileSync(reviewFile, 'utf8');
     fs.writeFileSync(reviewFile, review.replace('- [ ] APPROVE', '- [x] APPROVE'));
-    run(marketingCli, cwd, 'review', '--collect');
-    run(marketingCli, cwd, 'apply');
+    run(marketingCli, cwd, 'content', '--language-module', languageModule);
 
     assert.equal(fs.readFileSync(path.join(cwd, 'src/page.tsx'), 'utf8'), app);
     assert.equal(fs.readFileSync(path.join(cwd, 'messages/de.json'), 'utf8'), german);
-    assert.match(
-      fs.readFileSync(path.join(cwd, 'messages/en.json'), 'utf8'),
-      /A deployment dashboard/,
-    );
+    const changedEnglish = JSON.parse(fs.readFileSync(path.join(cwd, 'messages/en.json'), 'utf8'));
+    assert.match(changedEnglish.hero.headline, /A deployment dashboard/);
+    assert.equal(changedEnglish.hero.body, 'See every deployment in one place');
 
-    const languageConfig = await import(pathToFileURL(path.join(languageDist, 'config.js')));
     const languageMemory = await import(pathToFileURL(path.join(languageDist, 'memory.js')));
-    const languageApi = await import(pathToFileURL(path.join(languageRepo, 'dist/index.js')));
-    const marketingApi = await import(pathToFileURL(path.join(marketingRoot, 'dist/index.js')));
-    const config = languageConfig.loadConfig(cwd);
-    assert.ok(config, 'language-loop fixture config must load');
-    const memory = languageMemory.loadMemory(cwd, 'en');
-    const changed = languageMemory.adoptSourceEdits(cwd, memory, config);
-    assert.deepEqual(changed, ['hero.headline']);
-    assert.equal(memory.entries['hero.headline'].translations.de.status, 'stale');
-    assert.equal(memory.entries['hero.body'].translations.de, undefined);
+    const languageApi = await import(pathToFileURL(languageModule));
+    const marketingApi = await import(pathToFileURL(path.join(marketingPackageRoot, 'dist/index.js')));
 
     const handoff = JSON.parse(fs.readFileSync(
       path.join(cwd, '.marketing-loop/handoff.json'),
       'utf8',
     ));
     assert.deepEqual(handoff.unresolved, []);
+    assert.deepEqual(handoff.selection, {
+      filter: {
+        categories: [],
+        groups: [],
+        keys: ['hero.headline'],
+      },
+      requestedFilter: {
+        categories: ['headline'],
+        groups: ['hero'],
+        keys: [],
+      },
+      resolvedKeys: ['hero.headline'],
+      targetLocales: ['de'],
+    });
+    const stateFile = path.join(cwd, '.marketing-loop/content-loop.json');
+    const ready = marketingApi.readContentLoopState(stateFile);
+    assert.equal(ready.phase, 'language-ready');
+    assert.deepEqual(ready.selection.resolvedKeys, ['hero.headline']);
 
     const adapter = marketingApi.createLanguageLoopAdapter({
       cwd,
@@ -182,22 +203,44 @@ test('catalogue marketing hands one changed key back to language-loop', {
         ok: true,
       })),
     });
-    const filtered = await adapter.run({
-      execute: true,
-      keys: ['hero.headline'],
-      locales: ['de'],
+    assert.equal(
+      languageApi.CONTENT_LOOP_API_VERSION,
+      1,
+      'the released Language Loop consumer must advertise Content orchestration API v1',
+    );
+    const completed = await marketingApi.runContentLoop({
+      stateFile,
+      selection: ready.selection,
+      marketing: {
+        start: async () => {
+          throw new Error('completed marketing stage must not restart');
+        },
+        inspect: async () => {
+          throw new Error('completed marketing stage must not be re-inspected');
+        },
+        collectAndApply: async () => {
+          throw new Error('completed marketing stage must not be re-applied');
+        },
+      },
+      language: adapter,
+      executeLanguage: true,
     });
-    if (languageApi.CONTENT_LOOP_API_VERSION === 1) {
-      assert.equal(filtered.status, 'complete');
-      const translated = JSON.parse(fs.readFileSync(path.join(cwd, 'messages/de.json'), 'utf8'));
-      assert.match(translated.hero.headline, /^de:/);
-      assert.equal(translated.hero.body, 'Alle Deployments an einem Ort sehen');
-      assert.equal(fs.readFileSync(path.join(cwd, 'src/page.tsx'), 'utf8'), app);
-    } else {
-      assert.equal(filtered.status, 'blocked');
-      assert.match(filtered.error, /CONTENT_LOOP_API_VERSION.*1/i);
-      assert.equal(fs.readFileSync(path.join(cwd, 'messages/de.json'), 'utf8'), german);
-    }
+    assert.equal(completed.phase, 'complete');
+    assert.deepEqual(completed.language.progress, [{
+      locale: 'de',
+      total: 1,
+      accepted: 1,
+      pending: 0,
+      rework: 0,
+      needsHuman: 0,
+    }]);
+    const translated = JSON.parse(fs.readFileSync(path.join(cwd, 'messages/de.json'), 'utf8'));
+    assert.match(translated.hero.headline, /^de:/);
+    assert.equal(translated.hero.body, 'Alle Deployments an einem Ort sehen');
+    assert.equal(fs.readFileSync(path.join(cwd, 'src/page.tsx'), 'utf8'), app);
+    const durableMemory = languageMemory.loadMemory(cwd, 'en');
+    assert.equal(durableMemory.entries['hero.headline'].translations.de.status, 'approved');
+    assert.equal(durableMemory.entries['hero.body'].translations.de, undefined);
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

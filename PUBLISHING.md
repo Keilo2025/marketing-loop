@@ -13,21 +13,28 @@ npm view marketing-loop
 
 ## Coordinated 0.5 release
 
-The key-based handshake requires `marketing-loop` 0.5+ and `language-loop` 0.4+. Upgrade and release both together; do not publish either side until the shared contract and cross-loop lifecycle pass.
+The unified Content Loop requires `marketing-loop` 0.5+ and the published
+`language-loop` 0.4.1 orchestration release. Do not publish Marketing Loop until
+the shared contract and positive filtered cross-loop lifecycle pass against the
+registry package.
 
 Marketing Loop is the primary Content Loop app. `language-loop` remains a
-dynamically loaded peer (`>=0.4.0 <0.5.0`), not copied code. A release that
+dynamically loaded peer (`>=0.4.1 <0.5.0`), not copied code. A release that
 advertises filtered Content runs must pair with a Language Loop build exporting
-`CONTENT_LOOP_API_VERSION = 1` and enforcing `RunTranslationLoopInput.keys`
-across pending work, retries, judge decisions, memory, and target writes.
+`CONTENT_LOOP_API_VERSION = 1`, `inspectLanguageLoop`, and `runLanguageLoop`,
+with exact keys enforced across pending work, retries, judge decisions, memory,
+and target writes.
 
 Required order:
 
-1. Run both full test suites and inspect both package dry-runs.
-2. Run the cross-loop test with `LANGUAGE_LOOP_REPO` pointing at the compatible consumer checkout.
-3. Publish `language-loop@0.4.0`.
-4. Immediately publish `marketing-loop@0.5.0`.
-5. Verify registry metadata and clean-install smoke tests for both packages.
+1. Confirm `language-loop@0.4.1` registry version and integrity.
+2. Run Marketing Loop's full suite and package dry-run.
+3. Pack Marketing Loop and install that tarball with `language-loop@0.4.1` in
+   an empty directory.
+4. Run the positive filtered cross-loop test against those clean installed
+   packages.
+5. Publish `marketing-loop@0.5.0`, then verify registry metadata and a fresh
+   installed smoke test.
 
 ```bash
 cd /absolute/path/to/language-loop
@@ -41,18 +48,23 @@ npm pack --dry-run
 LANGUAGE_LOOP_REPO=/absolute/path/to/language-loop npm run test:cross-loop
 ```
 
-The cross-loop command must run one test with zero skips. It proves marketing leaves application code and target catalogues byte-for-byte unchanged, changes only the approved source key, empties the resolved handoff after apply, and lets `language-loop` mark only that key stale.
+For the registry-package gate, install a newly packed Marketing tarball and
+`language-loop@0.4.1` together with `--strict-peer-deps`, then point
+`MARKETING_LOOP_PACKAGE_ROOT` and `LANGUAGE_LOOP_REPO` at their installed
+package directories. The cross-loop command must run one test with zero skips.
+It proves the unified state machine leaves application code and out-of-scope
+source/target messages unchanged, hands off only the selected approved key,
+and reaches judge-accepted translation completion for that key.
 
 Do not publish without explicit human authorization, even when every gate passes.
 
 ### Rollback and mixed-version safety
 
 - Never apply schema-v5 state with `marketing-loop` 0.4.
-- Never translate unresolved schema-v4 marketing state with `language-loop` 0.4.
+- Never run unified Content orchestration with `language-loop` before 0.4.1.
 - After both compatible versions are installed, run `marketing-loop propose` again to regenerate active state and the handoff.
 - If only one package was published, pause the coordinated release and do not advise users to mix versions.
-- A missing Content API marker is safe only for an unfiltered all-catalogue run.
-  Filtered Content execution must remain fail-closed.
+- A missing Content API marker is incompatible and must remain fail-closed.
 - Do not call a Content run complete unless its persisted progress shows every
   selected key accepted for every selected locale.
 

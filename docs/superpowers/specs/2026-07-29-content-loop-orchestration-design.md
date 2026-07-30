@@ -3,7 +3,7 @@
 **Status:** Approved design  
 **Date:** 2026-07-29  
 **Owner:** `marketing-loop` 0.5  
-**Language engine:** compatible `language-loop` 0.4
+**Language engine:** compatible `language-loop` 0.4.1+
 
 ## Summary
 
@@ -223,53 +223,67 @@ handoff:
 
 ```ts
 selection?: {
-  filter: ContentFilter;
+  // Exact-key union filter consumed by Language Loop.
+  filter: { categories: []; groups: []; keys: string[] };
+  // Original normalized Marketing selectors retained for audit/status.
+  requestedFilter: {
+    categories: string[];
+    groups: string[];
+    keys: string[];
+  };
   resolvedKeys: string[];
   targetLocales: string[];
 }
 ```
 
-Existing Language Loop 0.4 consumers ignore this additive block and continue
-to validate the original schema-v1 fields. Content Loop's adapter passes the
-resolved keys and locales to the Content-capable language runner. Proposal
-generation, untrusted agent import, review, apply, handoff entries, source-edit
-adoption, and translation all enforce the same resolved key set. A stale or
-forged proposal outside that set is refused. Catalogue entries outside the set
-remain byte-identical.
+The exact-key consumer filter preserves Marketing's cross-field intersection
+semantics across Language Loop's union-based filter contract. Existing
+schema-v1 consumers may ignore the additive selection block. Content Loop's
+adapter passes the same resolved keys and locales to the Content-capable
+language facade. Proposal generation, untrusted agent import, review, apply,
+handoff entries, source-edit adoption, and translation all enforce that
+resolved key set. A stale or forged proposal outside it is refused. Catalogue
+entries outside it remain byte-identical.
 
 ## Language Loop adapter
 
 The default loader resolves the installed `language-loop` package or an
-explicit ESM module path. It verifies the required public functions before
-returning an adapter:
+explicit ESM module path. Language Loop 0.4.1's public orchestration facade is
+the preferred integration:
 
-- `requireConfig`
-- `loadMemory` / `saveMemory`
-- `adoptCatalogEdits` / `adoptSourceEdits`
-- `pendingWork`
-- `inspectMarketingHandoff`
-- `runTranslationLoop`
+- `CONTENT_LOOP_API_VERSION`
+- `inspectLanguageLoop`
+- `runLanguageLoop`
+- public memory/config exports used to verify durable terminal truth
 - provider registry and default translator/judge providers for `--llm`
 
-Filtered execution additionally requires Language Loop's exported Content
-capability contract:
+The exported Content capability contract is:
 
 ```ts
 export const CONTENT_LOOP_API_VERSION = 1;
 
-interface RunTranslationLoopInput {
-  // Existing fields remain unchanged.
+interface LanguageLoopScopeInput {
+  cwd: string;
   keys?: string[];
+  locales?: string[];
 }
+
+inspectLanguageLoop(input: LanguageLoopScopeInput): LanguageLoopSnapshot;
+runLanguageLoop(input: LanguageLoopScopeInput & {
+  translator: RunnerTranslator;
+  judge: RunnerJudge;
+  onProgress?: (event: TranslationLoopProgressEvent) => void;
+}): Promise<RunLanguageLoopResult>;
 ```
 
 When `keys` is present, Language Loop must form work exclusively from those
 canonical keys through every retry and batch. It may not synthesize, update, or
-write an out-of-scope key. A Content Loop adapter refuses filtered execution
-when this capability marker is missing; passing an unknown option to an older
-runner would be unsafe because JavaScript would silently ignore it.
+write an out-of-scope key. The adapter validates facade schema/API versions,
+scope, lifecycle, and progress, then reloads durable Language memory before
+accepting completion. It refuses filtered execution when the capability marker
+is missing.
 
-Before any language run, the adapter calls `inspectMarketingHandoff`. It refuses:
+Before provider execution, the adapter calls `inspectLanguageLoop`. It refuses:
 
 - missing or incompatible handoff schema
 - catalogue scope mismatch
@@ -278,7 +292,7 @@ Before any language run, the adapter calls `inspectMarketingHandoff`. It refuses
 - unresolved `pending` or `approved` marketing keys
 - legacy marketing state that the Language Loop consumer marks incompatible
 
-The compatible dependency range is `language-loop >=0.4.0 <0.5.0`. Marketing
+The compatible dependency range is `language-loop >=0.4.1 <0.5.0`. Marketing
 Loop declares that policy in package metadata and produces a direct,
 actionable error when the module is absent or incompatible. Local and CI tests
 may use `--language-module` or `LANGUAGE_LOOP_REPO` to load a built checkout.

@@ -24,7 +24,7 @@ import {
   normalizeContentFilter,
   resolveContentSelection,
 } from './core/filter.js';
-import { deriveHandoff, writeHandoff } from './core/handoff.js';
+import { deriveHandoff, handoffSelection, writeHandoff } from './core/handoff.js';
 import { loadReviewHistory } from './core/history.js';
 import { applyGuardrails } from './core/guardrails.js';
 import { importAgentOutput, parseAgentOutput } from './core/ingest.js';
@@ -1070,7 +1070,9 @@ function marketingSnapshot(
     set.proposals.filter((proposal) => proposal.status === status).length;
   const handoffCompatible = (
     handoff.schemaVersion === 1
-    && JSON.stringify(handoff.selection) === JSON.stringify(set.selection)
+    && JSON.stringify(handoff.selection) === JSON.stringify(
+      set.selection ? handoffSelection(set.selection) : undefined,
+    )
   );
   return {
     runId: inventory.runId,

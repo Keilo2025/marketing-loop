@@ -65,6 +65,220 @@ test('adapter passes exact selected keys and every selected locale to the Langua
   assert.deepEqual(progress.at(-1).map((row) => row.locale), targetLocales);
 });
 
+test('adapter prefers the published Language Loop orchestration facade for filtered execution', async () => {
+  const memory = makeMemory();
+  let lowLevelCalls = 0;
+  let facadeInput;
+  const module = languageModule({
+    memory,
+    runTranslationLoop: async () => {
+      lowLevelCalls++;
+      throw new Error('low-level runner must not be used when the facade exists');
+    },
+  });
+  module.inspectLanguageLoop = ({ keys, locales }) => ({
+    schemaVersion: 1,
+    apiVersion: 1,
+    phase: 'ready-translation',
+    nextStage: 'translate',
+    filter: {
+      requested: { categories: [], groups: [], keys },
+      kinds: ['cta'],
+      selectedKeys: keys,
+      unmatchedGroups: [],
+      unmatchedKeys: [],
+    },
+    targetLocales: locales,
+    hardcoded: 0,
+    openItems: 0,
+    marketing: {
+      installed: true,
+      compatible: true,
+      unresolvedKeys: [],
+      selectedUnresolvedKeys: [],
+    },
+    progress: locales.map((locale) => facadeProgress(locale, 1, 0, 1)),
+  });
+  module.runLanguageLoop = async (input) => {
+    facadeInput = input;
+    for (const locale of input.locales) approve(memory, 'hero.primaryCta', locale);
+    return {
+      schemaVersion: 1,
+      apiVersion: 1,
+      ...summary('complete', { applied: 2 }),
+      filter: {
+        requested: { categories: [], groups: [], keys: input.keys },
+        kinds: ['cta'],
+        selectedKeys: input.keys,
+        unmatchedGroups: [],
+        unmatchedKeys: [],
+      },
+      targetLocales: input.locales,
+      progress: input.locales.map((locale) => facadeProgress(locale, 1, 1, 0)),
+    };
+  };
+  const adapter = createLanguageLoopAdapter({ cwd: '/project', module });
+
+  const result = await adapter.run({
+    execute: true,
+    keys: selectedKeys,
+    locales: targetLocales,
+  });
+
+  assert.equal(lowLevelCalls, 0);
+  assert.deepEqual(facadeInput.keys, selectedKeys);
+  assert.deepEqual(facadeInput.locales, targetLocales);
+  assert.equal(result.status, 'complete');
+});
+
+test('facade provider failure reloads durable progress accepted before the pause', async () => {
+  const memory = makeMemory();
+  const module = languageModule({ memory, runTranslationLoop: async () => summary('complete') });
+  module.inspectLanguageLoop = ({ keys, locales }) => facadeInspection(keys, locales);
+  module.runLanguageLoop = async (input) => {
+    approve(memory, 'hero.primaryCta', 'de');
+    await input.onProgress({
+      schemaVersion: 1,
+      status: 'running',
+      batches: 1,
+      selectedKeys: input.keys,
+      progress: [
+        facadeProgress('de', 1, 1, 0),
+        facadeProgress('fr', 1, 0, 1),
+      ],
+    });
+    throw new Error('provider unavailable after first locale');
+  };
+  const adapter = createLanguageLoopAdapter({ cwd: '/project', module });
+
+  const result = await adapter.run({
+    execute: true,
+    keys: selectedKeys,
+    locales: targetLocales,
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.retryable, true);
+  assert.deepEqual(
+    result.progress.map(({ locale, accepted, pending }) => ({ locale, accepted, pending })),
+    [
+      { locale: 'de', accepted: 1, pending: 0 },
+      { locale: 'fr', accepted: 0, pending: 1 },
+    ],
+  );
+});
+
+test('adapter rejects a facade progress event whose selected keys diverge', async () => {
+  const memory = makeMemory();
+  const module = languageModule({ memory, runTranslationLoop: async () => summary('complete') });
+  module.inspectLanguageLoop = ({ keys, locales }) => facadeInspection(keys, locales);
+  module.runLanguageLoop = async (input) => {
+    await input.onProgress({
+      schemaVersion: 1,
+      status: 'running',
+      batches: 0,
+      selectedKeys: ['footer.legal'],
+      progress: input.locales.map((locale) => facadeProgress(locale, 1, 0, 1)),
+    });
+    for (const locale of input.locales) approve(memory, 'hero.primaryCta', locale);
+    return facadeResult(input.keys, input.locales, 1);
+  };
+  const adapter = createLanguageLoopAdapter({ cwd: '/project', module });
+
+  const result = await adapter.run({
+    execute: true,
+    keys: selectedKeys,
+    locales: targetLocales,
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.match(result.error, /selected.*scope/i);
+  assert.deepEqual(result.progress.map((row) => row.accepted), [0, 0]);
+});
+
+test('adapter rejects a facade result whose execution locales diverge', async () => {
+  const memory = makeMemory();
+  const module = languageModule({ memory, runTranslationLoop: async () => summary('complete') });
+  module.inspectLanguageLoop = ({ keys, locales }) => facadeInspection(keys, locales);
+  module.runLanguageLoop = async (input) => {
+    for (const locale of input.locales) approve(memory, 'hero.primaryCta', locale);
+    return facadeResult(input.keys, [...input.locales, 'es'], 1);
+  };
+  const adapter = createLanguageLoopAdapter({ cwd: '/project', module });
+
+  const result = await adapter.run({
+    execute: true,
+    keys: selectedKeys,
+    locales: targetLocales,
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.match(result.error, /selected.*scope/i);
+});
+
+test('adapter rejects facade result versions that are not numeric API v1', async () => {
+  const memory = makeMemory();
+  const module = languageModule({ memory, runTranslationLoop: async () => summary('complete') });
+  module.inspectLanguageLoop = ({ keys, locales }) => facadeInspection(keys, locales);
+  module.runLanguageLoop = async (input) => {
+    for (const locale of input.locales) approve(memory, 'hero.primaryCta', locale);
+    return {
+      ...facadeResult(input.keys, input.locales, 1),
+      schemaVersion: '1',
+      apiVersion: '1',
+    };
+  };
+  const adapter = createLanguageLoopAdapter({ cwd: '/project', module });
+
+  const result = await adapter.run({
+    execute: true,
+    keys: selectedKeys,
+    locales: targetLocales,
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.match(result.error, /schemaVersion 1.*apiVersion 1/i);
+});
+
+test('adapter fails closed on an unknown orchestration lifecycle phase', async () => {
+  let runCalls = 0;
+  const module = languageModule({
+    runTranslationLoop: async () => summary('complete'),
+  });
+  module.inspectLanguageLoop = ({ keys, locales }) => ({
+    schemaVersion: 1,
+    apiVersion: 1,
+    phase: 'future-phase',
+    filter: { selectedKeys: keys },
+    targetLocales: locales,
+    marketing: {
+      compatible: true,
+      selectedUnresolvedKeys: [],
+    },
+    progress: locales.map((locale) => facadeProgress(locale, 1, 0, 1)),
+  });
+  module.runLanguageLoop = async () => {
+    runCalls++;
+    return {
+      schemaVersion: 1,
+      apiVersion: 1,
+      ...summary('complete'),
+      progress: targetLocales.map((locale) => facadeProgress(locale, 1, 1, 0)),
+    };
+  };
+  const adapter = createLanguageLoopAdapter({ cwd: '/project', module });
+
+  const result = await adapter.run({
+    execute: true,
+    keys: selectedKeys,
+    locales: targetLocales,
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.match(result.error, /lifecycle phase/i);
+  assert.equal(runCalls, 0);
+});
+
 test('adapter never accepts a partial all-language result as complete', async () => {
   const memory = makeMemory();
   const module = languageModule({
@@ -108,7 +322,7 @@ test('adapter reports a provider availability pause as retryable without losing 
   assert.deepEqual(result.progress.map((row) => row.pending), [1, 1]);
 });
 
-test('unfiltered catalogue remains compatible with the current Language Loop API', async () => {
+test('unified Content Loop requires the published API marker even for an all-catalogue selection', async () => {
   let calls = 0;
   const memory = makeMemory();
   const module = languageModule({
@@ -130,8 +344,9 @@ test('unfiltered catalogue remains compatible with the current Language Loop API
     locales: targetLocales,
   });
 
-  assert.equal(result.status, 'complete');
-  assert.equal(calls, 1);
+  assert.equal(result.status, 'blocked');
+  assert.match(result.error, /CONTENT_LOOP_API_VERSION.*1/i);
+  assert.equal(calls, 0);
 });
 
 function languageModule({
@@ -221,5 +436,43 @@ function summary(status, overrides = {}) {
     needsHuman: 0,
     marketingBlocked: 0,
     ...overrides,
+  };
+}
+
+function facadeProgress(locale, total, accepted, pending) {
+  return {
+    locale,
+    total,
+    accepted,
+    pending,
+    marketingBlocked: 0,
+    needsHuman: 0,
+    status: pending ? 'pending' : 'complete',
+  };
+}
+
+function facadeInspection(keys, locales) {
+  return {
+    schemaVersion: 1,
+    apiVersion: 1,
+    phase: 'ready-translation',
+    filter: { selectedKeys: keys },
+    targetLocales: locales,
+    marketing: {
+      compatible: true,
+      selectedUnresolvedKeys: [],
+    },
+    progress: locales.map((locale) => facadeProgress(locale, keys.length, 0, keys.length)),
+  };
+}
+
+function facadeResult(keys, locales, accepted) {
+  return {
+    schemaVersion: 1,
+    apiVersion: 1,
+    ...summary('complete'),
+    filter: { selectedKeys: keys },
+    targetLocales: locales,
+    progress: locales.map((locale) => facadeProgress(locale, keys.length, accepted, 0)),
   };
 }

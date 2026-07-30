@@ -18,7 +18,7 @@ export {
 export { renderBrief } from './core/brief.js';
 export { buildMarketingContext } from './core/context.js';
 export { serveCanvas } from './core/canvas.js';
-export { deriveHandoff, writeHandoff } from './core/handoff.js';
+export { deriveHandoff, handoffSelection, writeHandoff } from './core/handoff.js';
 export {
   EMPTY_CONTENT_FILTER,
   matchesContentFilter,
