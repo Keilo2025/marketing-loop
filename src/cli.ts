@@ -608,6 +608,23 @@ async function cmdReview(cwd: string, flags: Flags): Promise<void> {
     return;
   }
 
+  // Re-rendering over a review file the human has already ticked would
+  // silently destroy their decisions. Refuse unless they ask for it.
+  if (exists(p.review) && !flags.force) {
+    const existing = collectReview(fs.readFileSync(p.review, 'utf8'));
+    const ticked = existing.filter((decision) => decision.explicit !== false).length;
+    if (ticked > 0) {
+      log.err(
+        `${path.relative(cwd, p.review)} already has ${ticked} ticked decision${ticked === 1 ? '' : 's'}. ` +
+        `Regenerating would discard them.`,
+      );
+      log.info(`  ${c.cyan('npx marketing-loop review --collect')}  record the decisions first`);
+      log.info(`  ${c.cyan('npx marketing-loop review --force')}    or discard them and regenerate`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   writeText(p.review, renderReview(set));
   log.ok(`Review file at ${c.cyan(path.relative(cwd, p.review))}`);
   log.blank();
@@ -645,6 +662,19 @@ function cmdApply(cwd: string, flags: Flags): ApplyResult[] {
     log.warn('Nothing approved yet. Nothing to do.');
     log.dim('A human has to approve before anything is written. That is the point of the tool.');
     log.info(`  ${c.cyan('npx marketing-loop review --ui')}`);
+    return [];
+  }
+
+  // Re-running apply after a successful apply must be a no-op, not a failure:
+  // the approved proposals are already on disk, so their scan hashes no longer
+  // match by design.
+  const outstanding = approved.filter((decision) => {
+    const proposal = set.proposals.find((candidate) => candidate.id === decision.proposalId);
+    return proposal?.status !== 'applied';
+  });
+  if (!outstanding.length) {
+    log.ok('Everything approved is already applied. Nothing to do.');
+    log.dim(`Undo:   ${c.cyan('npx marketing-loop revert')}`);
     return [];
   }
 
@@ -1107,7 +1137,12 @@ function explicitDecisionCount(
   let ledger = 0;
   if (exists(p.decisions)) {
     const decisions = readJsonStrict<DecisionSet>(p.decisions);
-    ledger = Array.isArray(decisions.decisions) ? decisions.decisions.length : 0;
+    // Only decisions a human actually made count. The ledger also records an
+    // implicit reject for every unticked review block, and counting those
+    // would open the Content Loop's review gate without any human input.
+    ledger = Array.isArray(decisions.decisions)
+      ? decisions.decisions.filter((decision) => decision.explicit === true).length
+      : 0;
   }
   return Math.max(markdown, ledger);
 }

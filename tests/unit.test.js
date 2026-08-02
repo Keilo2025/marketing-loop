@@ -1282,6 +1282,19 @@ test('without the fan-out tick, siblings are left alone', () => {
   assert.equal(fannedOut, 0);
 });
 
+test('folding a stale review never regresses an applied proposal', () => {
+  // The CLI re-collects review.md on every apply. After a successful apply the
+  // ticks are still in the file, and folding them back in must leave the
+  // applied proposal applied — its text is already on disk.
+  const set = {
+    generatedAt: '', product: 't',
+    proposals: [fakeProposal('a', 'messages/en.json', { status: 'applied' })],
+  };
+
+  const { set: folded } = foldDecisions(set, [{ proposalId: 'a', approved: true, explicit: true }]);
+  assert.equal(folded.proposals[0].status, 'applied');
+});
+
 test('the review file round-trips the fan-out tick', () => {
   const set = {
     generatedAt: '', product: 't',
@@ -1536,6 +1549,99 @@ test('agent output is canonicalized from inventory and cannot approve itself', (
   assert.equal(proposal.status, 'pending');
   assert.equal(proposal.author, 'agent');
   assert.match(proposal.id, /^[a-f0-9]{8}$/);
+});
+
+test('agent import replaces a pending engine proposal for the same copy', () => {
+  // The brief tells agents: reuse the copyId and your rewrite replaces the
+  // engine version. Two pending proposals for one source span would both show
+  // up in review, and approving both aborts the whole apply batch.
+  const scan = scanRepo(FIXTURE, config, 'run-replace-import');
+  const item = scan.items.find((candidate) => candidate.catalogueKey === 'landing.cta');
+  assert.ok(item);
+  const inventory = {
+    schemaVersion: 5, scopeDigest: scan.scopeDigest, sourceLocale: scan.sourceLocale,
+    runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    generatedAt: '', repositoryRoot: FIXTURE, filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy, truncated: false, items: scan.items,
+  };
+  const engineProposal = {
+    id: 'engine-cta', copyId: item.id, catalogueKey: item.catalogueKey,
+    sourceLocale: item.sourceLocale, scopeDigest: item.scopeDigest,
+    file: item.file, line: item.line, kind: item.kind,
+    before: item.text, after: 'Get my deployment dashboard',
+    alternatives: [], rationale: 'Names the outcome.', problemSolved: 'Generic CTA.',
+    principles: [], evidence: [], confidence: 0.7, status: 'pending', author: 'engine',
+  };
+  const set = {
+    schemaVersion: 5, scopeDigest: scan.scopeDigest, sourceLocale: scan.sourceLocale,
+    runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    generatedAt: '', product: 'test', proposals: [engineProposal],
+  };
+  const output = {
+    schemaVersion: 5, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    proposals: [{
+      copyId: item.id,
+      after: 'Get my deployment audit',
+      alternatives: [],
+      rationale: 'Names the deliverable.',
+      problemSolved: 'Generic CTA.',
+      principles: ['outcome-framing'],
+      evidence: ['catalogue text'],
+      confidence: 0.8,
+    }],
+  };
+
+  const result = importAgentOutput(set, inventory, output, config);
+  assert.equal(result.accepted, 1);
+  const forCta = result.set.proposals.filter((proposal) => proposal.copyId === item.id);
+  assert.equal(forCta.length, 1, 'exactly one proposal survives for the copy');
+  assert.equal(forCta[0].author, 'agent');
+  assert.equal(forCta[0].after, 'Get my deployment audit');
+});
+
+test('agent import never replaces a proposal the human already approved', () => {
+  const scan = scanRepo(FIXTURE, config, 'run-protect-import');
+  const item = scan.items.find((candidate) => candidate.catalogueKey === 'landing.cta');
+  assert.ok(item);
+  const inventory = {
+    schemaVersion: 5, scopeDigest: scan.scopeDigest, sourceLocale: scan.sourceLocale,
+    runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    generatedAt: '', repositoryRoot: FIXTURE, filesScanned: scan.filesScanned,
+    filesWithCopy: scan.filesWithCopy, truncated: false, items: scan.items,
+  };
+  const approvedProposal = {
+    id: 'approved-cta', copyId: item.id, catalogueKey: item.catalogueKey,
+    sourceLocale: item.sourceLocale, scopeDigest: item.scopeDigest,
+    file: item.file, line: item.line, kind: item.kind,
+    before: item.text, after: 'Get my deployment dashboard',
+    alternatives: [], rationale: 'Names the outcome.', problemSolved: 'Generic CTA.',
+    principles: [], evidence: [], confidence: 0.7, status: 'approved', author: 'engine',
+  };
+  const set = {
+    schemaVersion: 5, scopeDigest: scan.scopeDigest, sourceLocale: scan.sourceLocale,
+    runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    generatedAt: '', product: 'test', proposals: [approvedProposal],
+  };
+  const output = {
+    schemaVersion: 5, runId: scan.runId, inventoryDigest: scan.inventoryDigest,
+    proposals: [{
+      copyId: item.id,
+      after: 'Get my deployment audit',
+      alternatives: [],
+      rationale: 'Names the deliverable.',
+      problemSolved: 'Generic CTA.',
+      principles: ['outcome-framing'],
+      evidence: ['catalogue text'],
+      confidence: 0.8,
+    }],
+  };
+
+  const result = importAgentOutput(set, inventory, output, config);
+  assert.equal(result.accepted, 0);
+  assert.match(result.rejected[0].reason, /already approved or applied/i);
+  assert.equal(result.set.proposals.length, 1);
+  assert.equal(result.set.proposals[0].status, 'approved');
+  assert.equal(result.set.proposals[0].author, 'engine');
 });
 
 test('Content selection rejects an otherwise valid agent proposal outside its canonical keys', () => {
@@ -1830,6 +1936,38 @@ test('approval records are bound to the run, inventory, proposal, and final text
     proposals: [{ ...proposal, after: 'A different proposal' }],
   };
   assert.match(validateDecisionSet(tampered, decisions)[0], /digest/i);
+});
+
+test('the ledger records which decisions a human actually made', () => {
+  // Every unticked review block produces an implicit reject. The Content
+  // Loop's review gate counts explicit decisions, so the ledger must tell the
+  // two apart — otherwise parsing a file nobody looked at opens the gate.
+  const ticked = {
+    id: 'p-ticked', copyId: 'c-ticked', file: 'messages/en.json', line: 1, kind: 'cta',
+    before: 'Submit', after: 'Get my audit', alternatives: [],
+    rationale: 'Names the deliverable.', problemSolved: 'The action was vague.',
+    principles: [], evidence: [], confidence: 0.8, status: 'pending', author: 'engine',
+  };
+  const untouched = {
+    id: 'p-untouched', copyId: 'c-untouched', file: 'messages/en.json', line: 2, kind: 'cta',
+    before: 'Get Started', after: 'Start monitoring', alternatives: [],
+    rationale: 'Names the outcome.', problemSolved: 'The action was generic.',
+    principles: [], evidence: [], confidence: 0.7, status: 'pending', author: 'engine',
+  };
+  const set = {
+    ...STATE_IDENTITY,
+    generatedAt: '', product: 'test', proposals: [ticked, untouched],
+  };
+  const markdown = renderReview(set).replace(
+    '<!-- marketing-loop:p-ticked -->\n- [ ] APPROVE',
+    '<!-- marketing-loop:p-ticked -->\n- [x] APPROVE',
+  );
+
+  const decisions = collectDecisionSet(set, markdown);
+  const byId = Object.fromEntries(decisions.decisions.map((d) => [d.proposalId, d]));
+  assert.equal(byId['p-ticked'].explicit, true);
+  assert.equal(byId['p-untouched'].explicit, undefined, 'implicit rejects stay unmarked');
+  assert.equal(byId['p-untouched'].decision, 'rejected');
 });
 
 test('a review file from another run is refused instead of silently reused', () => {
@@ -2229,6 +2367,78 @@ test('failed CLI apply persists failed status, refreshes handoff, and exits non-
         .some((entry) => entry.key === chosen.catalogueKey),
       false,
     );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('review refuses to overwrite a ticked review file unless forced', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cli-review-guard-'));
+  fs.cpSync(FIXTURE, tmp, { recursive: true });
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const run = (...args) => spawnSync(
+    process.execPath,
+    [cli, ...args, '--cwd', tmp],
+    { encoding: 'utf8' },
+  );
+
+  try {
+    assert.equal(run('propose').status, 0);
+    assert.equal(run('review').status, 0);
+    const reviewPath = path.join(tmp, '.marketing-loop', 'review.md');
+    const ticked = fs.readFileSync(reviewPath, 'utf8')
+      .replace('- [ ] APPROVE', '- [x] APPROVE');
+    fs.writeFileSync(reviewPath, ticked);
+
+    // Re-running review must not silently destroy the human's ticks.
+    const refused = run('review');
+    assert.notEqual(refused.status, 0, 'regenerating over ticks must fail');
+    assert.match(refused.stdout + refused.stderr, /ticked decision/i);
+    assert.equal(fs.readFileSync(reviewPath, 'utf8'), ticked);
+
+    const forced = run('review', '--force');
+    assert.equal(forced.status, 0, forced.stderr || forced.stdout);
+    assert.equal(
+      fs.readFileSync(reviewPath, 'utf8').includes('- [x] APPROVE'),
+      false,
+      '--force regenerates a clean file deliberately',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('a second CLI apply is a no-op that preserves the applied state', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mloop-cli-reapply-'));
+  fs.cpSync(FIXTURE, tmp, { recursive: true });
+  const cli = path.join(here, '..', 'dist', 'cli.js');
+  const run = (...args) => spawnSync(
+    process.execPath,
+    [cli, ...args, '--cwd', tmp],
+    { encoding: 'utf8' },
+  );
+
+  try {
+    assert.equal(run('propose').status, 0);
+    assert.equal(run('review').status, 0);
+    const out = path.join(tmp, '.marketing-loop');
+    const reviewPath = path.join(out, 'review.md');
+    const ticked = fs.readFileSync(reviewPath, 'utf8')
+      .replaceAll('- [ ] APPROVE', '- [x] APPROVE');
+    fs.writeFileSync(reviewPath, ticked);
+
+    const first = run('apply');
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const report = fs.readFileSync(path.join(out, 'report.md'), 'utf8');
+
+    // The ticked review.md is still on disk. Applying again must not regress
+    // the applied proposals to failed or overwrite the report with a failure.
+    const second = run('apply');
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    assert.match(second.stdout + second.stderr, /already applied/i);
+    const set = readJsonStrict(path.join(out, 'proposals.json'));
+    assert.ok(set.proposals.every((proposal) => proposal.status === 'applied'));
+    assert.equal(fs.readFileSync(path.join(out, 'report.md'), 'utf8'), report);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

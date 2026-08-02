@@ -124,6 +124,7 @@ export function decisionSetFrom(
       decision: decision.approved ? 'approved' : 'rejected',
       finalText,
       ...(!decision.approved && decision.reason ? { reason: decision.reason } : {}),
+      ...(decision.explicit ? { explicit: true } : {}),
       source,
       decidedAt: new Date().toISOString(),
     });
@@ -210,7 +211,7 @@ function requireIdentity(
 function expandDecisions(
   set: ProposalSet,
   decisions: Decision[],
-): Map<string, { approved: boolean; finalText?: string; reason?: string }> {
+): Map<string, { approved: boolean; finalText?: string; reason?: string; explicit: boolean }> {
   const byId = new Map(decisions.map((decision) => [decision.proposalId, decision]));
   const explicit = new Set(
     decisions.filter((decision) => decision.explicit !== false).map((decision) => decision.proposalId),
@@ -230,12 +231,15 @@ function expandDecisions(
     }
   }
 
-  const expanded = new Map<string, { approved: boolean; finalText?: string; reason?: string }>();
+  const expanded = new Map<string, { approved: boolean; finalText?: string; reason?: string; explicit: boolean }>();
   for (const proposal of set.proposals) {
     const carriedDecision = carried.get(proposal.id);
     const direct = carriedDecision ? undefined : byId.get(proposal.id);
     const decision = direct ?? carriedDecision;
-    if (decision) expanded.set(proposal.id, decision);
+    // A decision counts as explicit only when the human ticked this very
+    // block. Fan-out carries are deliberate but indirect, and the lead's own
+    // tick is what the review gate counts.
+    if (decision) expanded.set(proposal.id, { ...decision, explicit: explicit.has(proposal.id) });
   }
   return expanded;
 }

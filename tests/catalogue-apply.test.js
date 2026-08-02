@@ -248,6 +248,70 @@ test('apply rejects a backup directory with an existing symlink component', () =
   }
 });
 
+test('apply is idempotent: a second run is a no-op, not a failure', () => {
+  const state = approvedCatalogueState();
+  try {
+    const first = applyProposals(state.set, state.options());
+    assert.equal(first[0].ok, true, first[0].reason);
+    assert.equal(state.set.proposals[0].status, 'applied');
+    const appliedSource = fs.readFileSync(state.sourceFile, 'utf8');
+    assert.match(appliedSource, /Run my audit/);
+
+    // The same decision ledger arrives again (the CLI re-collects review.md on
+    // every apply). The already-written proposal must be skipped, not retried
+    // against its now-stale scan hash and marked failed.
+    const second = applyProposals(state.set, state.options());
+    assert.deepEqual(second, []);
+    assert.equal(state.set.proposals[0].status, 'applied');
+    assert.equal(fs.readFileSync(state.sourceFile, 'utf8'), appliedSource);
+  } finally {
+    fs.rmSync(state.cwd, { recursive: true, force: true });
+  }
+});
+
+test('a failed batch never rewrites the status of an already applied proposal', () => {
+  const state = approvedCatalogueState();
+  try {
+    const first = applyProposals(state.set, state.options());
+    assert.equal(first[0].ok, true, first[0].reason);
+
+    // A second approved proposal enters the run later and fails preflight —
+    // its copyId is not in the active inventory. The batch aborts.
+    const late = {
+      ...state.set.proposals[0],
+      id: 'late-proposal',
+      copyId: 'late-copy',
+      catalogueKey: 'other.key',
+      status: 'pending',
+    };
+    state.set.proposals.push(late);
+    state.decisions.decisions.push({
+      proposalId: late.id,
+      proposalDigest: proposalDigest(late, late.after),
+      decision: 'approved',
+      finalText: late.after,
+      source: 'markdown',
+      decidedAt: new Date().toISOString(),
+    });
+
+    const second = applyProposals(state.set, state.options());
+    assert.equal(second.length, 1);
+    assert.equal(second[0].ok, false);
+    assert.match(second[0].reason, /not present in the active inventory|batch aborted/i);
+    assert.equal(
+      state.set.proposals.find((proposal) => proposal.id === 'catalogue-proposal').status,
+      'applied',
+      'the applied proposal keeps its status; its bytes are on disk',
+    );
+    assert.equal(
+      state.set.proposals.find((proposal) => proposal.id === 'late-proposal').status,
+      'failed',
+    );
+  } finally {
+    fs.rmSync(state.cwd, { recursive: true, force: true });
+  }
+});
+
 test('revert refuses a backup outside the current source catalogue', () => {
   const state = approvedCatalogueState();
   try {

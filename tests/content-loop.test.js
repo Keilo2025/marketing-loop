@@ -66,6 +66,51 @@ test('Content Loop starts marketing once and stays paused until an explicit revi
   }
 });
 
+test('Content Loop restarts the marketing stage when a previous run crashed inside it', async () => {
+  const fixture = stateFixture();
+  // What a process kill between persist() and the end of marketing.start()
+  // leaves behind: phase 'marketing', no marketing run recorded.
+  fs.writeFileSync(fixture.file, JSON.stringify({
+    schemaVersion: 1,
+    phase: 'marketing',
+    contentRunId: 'crashed-run',
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    selection,
+    marketing: marketingSnapshot({ runId: '', proposals: 0, pending: 0 }),
+  }));
+  let starts = 0;
+  let languageCalls = 0;
+  const marketing = marketingAdapter({
+    start: async () => {
+      starts++;
+      return marketingSnapshot({ pending: 2, proposals: 2 });
+    },
+  });
+  const language = {
+    run: async () => {
+      languageCalls++;
+      return completeLanguage();
+    },
+  };
+
+  try {
+    const state = await runContentLoop({
+      stateFile: fixture.file,
+      selection,
+      marketing,
+      language,
+      executeLanguage: true,
+    });
+    assert.equal(state.phase, 'waiting-review');
+    assert.equal(starts, 1, 'the marketing stage must run again from scratch');
+    assert.equal(languageCalls, 0, 'translation must never run on unreviewed copy');
+    assert.equal(state.marketingRunId, 'marketing-run');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('Content Loop settles review then exposes language-ready without provider execution', async () => {
   const fixture = stateFixture();
   let reviewed = false;

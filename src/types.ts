@@ -315,6 +315,13 @@ export interface ProposalDecision {
   finalText: string;
   /** Optional human explanation for a rejection. */
   reason?: string;
+  /**
+   * True only when a human actually made this call — a ticked box, an edited
+   * final text, or a canvas click. Absent on the implicit rejects that every
+   * untouched review block produces, so the Content Loop's review gate can
+   * tell "a human looked at this" apart from "a file was parsed".
+   */
+  explicit?: boolean;
   source: 'canvas' | 'markdown';
   decidedAt: string;
 }

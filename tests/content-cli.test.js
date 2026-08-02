@@ -83,6 +83,38 @@ test('content command carries one filter through proposal, approval, handoff, an
   }
 });
 
+test('content loop ignores a review collection in which nothing was ticked', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'content-cli-gate-'));
+  try {
+    writeFixture(cwd);
+    const modulePath = path.join(cwd, 'fake-language-loop.mjs');
+
+    run(cwd, 'content', '--types', 'cta', '--groups', 'hero', '--language-module', modulePath);
+    let state = readJson(cwd, '.marketing-loop/content-loop.json');
+    assert.equal(state.phase, 'waiting-review');
+
+    // Collecting the untouched review file records an implicit reject for
+    // every proposal. That is not a human decision and must not open the gate.
+    run(cwd, 'review', '--collect');
+    run(cwd, 'content', '--types', 'cta', '--groups', 'hero', '--language-module', modulePath);
+    state = readJson(cwd, '.marketing-loop/content-loop.json');
+    assert.equal(state.phase, 'waiting-review', 'implicit rejects are not a review');
+    assert.equal(state.marketing.explicitDecisions, 0);
+
+    // A real tick is.
+    const reviewFile = path.join(cwd, '.marketing-loop/review.md');
+    const review = fs.readFileSync(reviewFile, 'utf8');
+    fs.writeFileSync(reviewFile, review.replace('- [ ] APPROVE', '- [x] APPROVE'));
+    run(cwd, 'review', '--collect');
+    run(cwd, 'content', '--types', 'cta', '--groups', 'hero', '--language-module', modulePath);
+    state = readJson(cwd, '.marketing-loop/content-loop.json');
+    assert.equal(state.phase, 'language-ready');
+    assert.equal(state.marketing.explicitDecisions, 1);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 function run(cwd, ...args) {
   const result = spawnSync(process.execPath, [cli, ...args, '--cwd', cwd], {
     cwd,

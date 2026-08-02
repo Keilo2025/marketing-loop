@@ -72,7 +72,9 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
     if (opts.dryRun) return;
     const authorizedIds = new Set(authorized.map((decision) => decision.proposalId));
     for (const proposal of set.proposals) {
-      if (authorizedIds.has(proposal.id)) proposal.status = 'failed';
+      // Applied means the bytes are on disk; a later failure elsewhere in the
+      // batch must not rewrite that fact.
+      if (authorizedIds.has(proposal.id) && proposal.status !== 'applied') proposal.status = 'failed';
     }
   };
   const failAll = (reason: string): ApplyResult[] => {
@@ -150,6 +152,10 @@ function applySecure(set: ProposalSet, opts: ApplyOptions): ApplyResult[] {
       results.push({ proposalId: decision.proposalId, file: '', ok: false, reason: 'proposal no longer exists' });
       continue;
     }
+    // Idempotent re-run: a proposal already written to the catalogue is not
+    // written again. Its scan hash no longer matches by design, so attempting
+    // it would fail preflight and poison the batch.
+    if (proposal.status === 'applied') continue;
     const result: ApplyResult = { proposalId: proposal.id, file: proposal.file, ok: false };
     try {
       const item = itemById.get(proposal.copyId);

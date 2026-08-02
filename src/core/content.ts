@@ -33,6 +33,12 @@ export async function runContentLoop(
   assertSelection(input.selection);
   let state = input.restart ? null : readContentLoopState(input.stateFile);
 
+  // A state file still in phase 'marketing' means the previous process died
+  // inside marketing.start() before any marketing run was recorded. There is
+  // nothing to resume — start the marketing stage over rather than falling
+  // through to translation with copy no human has reviewed.
+  if (state?.phase === 'marketing') state = null;
+
   if (!state) {
     state = initialState(input.selection);
     persist(input.stateFile, state);

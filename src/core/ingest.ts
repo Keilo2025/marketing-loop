@@ -153,8 +153,20 @@ export function importAgentOutput(
   const knownPrinciples = new Set(PRINCIPLES.map((principle) => principle.id));
   const itemById = new Map(inventory.items.map((item) => [item.id, item]));
   const incomingCopyIds = new Set(output.proposals.map((proposal) => proposal.copyId));
+  // Reusing a copyId replaces the previous undecided rewrite for that copy,
+  // whoever wrote it — that is the contract the brief gives agents. Proposals
+  // a human has already approved, or that are already on disk, are never
+  // replaced by an import; the incoming rewrite is refused below instead.
+  const decidedCopyIds = new Set(
+    set.proposals
+      .filter((proposal) => proposal.status === 'approved' || proposal.status === 'applied')
+      .map((proposal) => proposal.copyId),
+  );
   const retained = set.proposals.filter(
-    (proposal) => proposal.author !== author || !incomingCopyIds.has(proposal.copyId),
+    (proposal) =>
+      !incomingCopyIds.has(proposal.copyId)
+      || proposal.status === 'approved'
+      || proposal.status === 'applied',
   );
   const accepted: Proposal[] = [];
   const blocked: ImportBlock[] = [];
@@ -182,6 +194,14 @@ export function importAgentOutput(
         index,
         copyId: incoming.copyId,
         reason: `copyId ${incoming.copyId} is outside the active Content Loop selection`,
+      });
+      continue;
+    }
+    if (decidedCopyIds.has(incoming.copyId)) {
+      rejected.push({
+        index,
+        copyId: incoming.copyId,
+        reason: 'a proposal for this copy is already approved or applied; apply it or reject it before importing a replacement',
       });
       continue;
     }

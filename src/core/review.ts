@@ -229,6 +229,9 @@ export function foldDecisions(set: ProposalSet, decisions: Decision[]): FoldResu
   }
 
   const proposals = set.proposals.map((p) => {
+    // Applied is terminal: re-collecting a stale review.md must not regress a
+    // proposal whose text is already on disk. Only `revert` undoes an apply.
+    if (p.status === 'applied') return p;
     const carry = carried.get(p.id);
     // A carried decision wins over the default reject that every untouched
     // block produces — but never over a box the human actually ticked.
